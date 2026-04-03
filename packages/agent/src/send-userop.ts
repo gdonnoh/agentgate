@@ -26,8 +26,8 @@ import { toSimpleSmartAccount } from "permissionless/accounts";
 import { createPimlicoClient } from "permissionless/clients/pimlico";
 import {
   entryPoint07Address,
-  type UserOperation,
 } from "viem/account-abstraction";
+import { keccak256, toBytes } from "viem";
 
 dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 
@@ -38,9 +38,12 @@ const PIMLICO_API_KEY   = process.env.PIMLICO_API_KEY as string;
 if (!AGENT_PRIVATE_KEY) throw new Error("AGENT_PRIVATE_KEY not set in .env");
 if (!PIMLICO_API_KEY)   throw new Error("PIMLICO_API_KEY not set in .env");
 
-const PAYMASTER_ADDRESS  = "0xf75bf95c4158B69b185191C218E723e21F302A21" as Address;
+const PAYMASTER_ADDRESS  = "0x83da591891e83a978deA8640Ddc7F047fdbEf75D" as Address;
 const REGISTRY_ADDRESS   = "0xfbcee3e39a0909549fbc28cac37141d01f946189" as Address;
 const ENTRYPOINT_ADDRESS = entryPoint07Address; // 0x0000000071727De22E5E9d8BAf0edAc6f37da032
+
+// The endpoint being accessed — hash must match what's set in the paymaster
+const ENDPOINT_URL       = "https://agentgate.demo/api/weather";
 
 const PIMLICO_RPC = `https://api.pimlico.io/v2/84532/rpc?apikey=${PIMLICO_API_KEY}`;
 
@@ -90,22 +93,22 @@ async function main() {
     bundlerTransport: http(PIMLICO_RPC),
     client: publicClient,
     paymaster: {
-      // Stub data used during gas estimation (paymaster address + empty data)
-      async getPaymasterStubData(userOp) {
+      // Stub data: paymaster address + endpoint hash encoded in paymasterData
+      async getPaymasterStubData(_userOp) {
         return {
           paymaster: PAYMASTER_ADDRESS,
-          paymasterData: "0x" as Hex,
-          paymasterVerificationGasLimit: 100000n,
-          paymasterPostOpGasLimit: 50000n,
+          paymasterData: endpointHash,  // bytes32 endpointHash at offset [52:84]
+          paymasterVerificationGasLimit: 150000n,
+          paymasterPostOpGasLimit: 80000n,
         };
       },
-      // Actual paymaster data for submission (same — no signature needed)
-      async getPaymasterData(userOp) {
+      // Actual paymaster data — same, no off-chain signature needed
+      async getPaymasterData(_userOp) {
         return {
           paymaster: PAYMASTER_ADDRESS,
-          paymasterData: "0x" as Hex,
-          paymasterVerificationGasLimit: 100000n,
-          paymasterPostOpGasLimit: 50000n,
+          paymasterData: endpointHash,
+          paymasterVerificationGasLimit: 150000n,
+          paymasterPostOpGasLimit: 80000n,
         };
       },
     },
@@ -122,8 +125,13 @@ async function main() {
 
   // 6. Build calldata — call the PublisherRegistry to read nextEndpointId (view-only demo)
   //    Alternatively: send 0 ETH to self (cheapest no-op call)
+  // Compute endpoint hash — included in paymasterData so the paymaster knows the sponsorship %
+  const endpointHash = keccak256(toBytes(ENDPOINT_URL)) as Hex;
+
   console.log(`\n⚙️  Paymaster:    ${PAYMASTER_ADDRESS}`);
   console.log(`   Registry:    ${REGISTRY_ADDRESS}`);
+  console.log(`   Endpoint:    ${ENDPOINT_URL}`);
+  console.log(`   EndpointHash:${endpointHash}`);
   console.log(`   Bundler:     Pimlico`);
   console.log(`   EntryPoint:  ${ENTRYPOINT_ADDRESS}`);
 

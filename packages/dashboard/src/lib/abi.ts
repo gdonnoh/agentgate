@@ -5,6 +5,13 @@ export const PAYMASTER_ABI = [
   { name: "getTotalSponsored",  type: "function", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
   { name: "getRemainingBudget", type: "function", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
   { name: "lastResetTimestamp", type: "function", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
+  {
+    name: "endpointSponsorshipBps",
+    type: "function",
+    inputs: [{ name: "endpointHash", type: "bytes32" }],
+    outputs: [{ type: "uint16" }],
+    stateMutability: "view",
+  },
 ] as const;
 
 export const REGISTRY_ABI = [

@@ -4,23 +4,24 @@
     "chainId": 84532,
     "deployer": "0x05a7Ae061c14847e0B70f7851d76FC10289d69b0",
     "publisherRegistry": "0xfbcee3e39a0909549fbc28cac37141d01f946189",
-    "paymaster": "0xf75bf95c4158B69b185191C218E723e21F302A21",
+    "paymaster": "0x83da591891e83a978deA8640Ddc7F047fdbEf75D",
     "entryPoint": "0x0000000071727De22E5E9d8BAf0edAc6f37da032",
     "deployTxHash": "0x9c1653279c010f3b5b4b1dec4438d60d7deea56d00dc0512cb3d8dfc6f3c4dc4",
-    "paymasterDeployTxHash": "0x6e65b541e87cc4c55c7639dba99690846dd506a36a42efd944c7f2433aa8c0a6",
+    "paymasterDeployTxHash": "0xf37a746f0abb8396d6b273de163509fd99562cc738d8133770490e62bc96baec",
     "registerEndpointTxHash": "0x9fa5eb68c10d3448ac73b47313550f8ab9bbc468e1fdb29933537cf4041cd072",
-    "fundTxHash": "0xd5be3def8f88601948c5226e7a74dca7e033d95ade169e8205e2a8775f7c1ddf",
-    "stakeTxHash": "0x77b610b362d036a44abf2c3322fb2ca59b148de77c185919a0e7b77344080f82",
+    "fundTxHash": "0xcf1a4bd532534ec2d5b7f13e00106ab6be144362fe2f06c7f8fbd9deebc49c2f",
+    "stakeTxHash": "0xdb355cf9774cdb522ab95e274b343c68d58ac17d24a48277d8c1c4b6cd66c6e2",
     "weatherEndpoint": "https://agentgate.demo/api/weather",
-    "deployedAt": "2026-04-03T21:46:49.761Z",
+    "deployedAt": "2026-04-03T23:06:25.905Z",
     "explorer": {
       "publisherRegistry": "https://sepolia.basescan.org/address/0xfbcee3e39a0909549fbc28cac37141d01f946189",
-      "paymaster": "https://sepolia.basescan.org/address/0xfb274b563b2c1f9f9b77cf0944b99b00c006e754",
+      "paymaster": "https://sepolia.basescan.org/address/0x83da591891e83a978deA8640Ddc7F047fdbEf75D",
       "deployTx": "https://sepolia.basescan.org/tx/0x9c1653279c010f3b5b4b1dec4438d60d7deea56d00dc0512cb3d8dfc6f3c4dc4",
-      "paymasterDeployTx": "https://sepolia.basescan.org/tx/0x6d6e17e9a9ad1a8ab781928168737ad8a00aa9d68079c65972312ea710f3269e",
+      "paymasterDeployTx": "https://sepolia.basescan.org/tx/0xf37a746f0abb8396d6b273de163509fd99562cc738d8133770490e62bc96baec",
       "registerTx": "https://sepolia.basescan.org/tx/0x9fa5eb68c10d3448ac73b47313550f8ab9bbc468e1fdb29933537cf4041cd072",
       "fundTx": "https://sepolia.basescan.org/tx/0x623b89b9a2fe91228f0b978b288e81e24f7da10c6bb222352a3f90265e659df4"
-    }
+    },
+    "sponsorTxHash": "0xebf1c897b0c335b76d1b7a44c47805d0a9503db7e71dfb6272b5a0810b8a0b17"
   },
   "hedera": {
     "network": "hedera",

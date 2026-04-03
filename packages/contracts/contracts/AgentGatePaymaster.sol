@@ -7,148 +7,173 @@ import "@account-abstraction/contracts/interfaces/IEntryPoint.sol";
 /**
  * @title AgentGatePaymaster
  * @notice ERC-4337 Paymaster that sponsors gas for AI agents calling registered endpoints.
- *         Deployed by each publisher to attract more agent traffic.
- *         BasePaymaster already inherits Ownable — no need to re-import.
+ *
+ *  Publisher gas-share model
+ *  ─────────────────────────
+ *  Each endpoint has a `gasShareBps` (0–10 000 = 0–100%).
+ *  When an agent includes the endpoint hash in `paymasterData`, the paymaster:
+ *    – covers 100% of the gas cost from its EntryPoint deposit (ERC-4337 requirement)
+ *    – but charges only `(maxCost * gasShareBps / 10 000)` against the daily budget
+ *
+ *  A publisher at 100% is most attractive (all gas sponsored, full daily budget used).
+ *  A publisher at 50% uses only half the daily budget per call → twice as many calls/day.
+ *
+ *  paymasterData layout (bytes passed after the standard 52-byte header):
+ *    bytes[0:32]  = bytes32 endpointHash  (keccak256 of endpoint URL)
  */
 contract AgentGatePaymaster is BasePaymaster {
-    // Daily budget tracking
+    // ── Daily budget tracking ───────────────────────────────────────────────
     uint256 public dailyBudget;
     uint256 public dailySpent;
     uint256 public lastResetTimestamp;
 
-    // Total stats
+    // ── Global stats ────────────────────────────────────────────────────────
     uint256 public totalSponsored;
     uint256 public totalCalls;
 
-    // Registered endpoints this paymaster covers
-    mapping(bytes32 => bool) public registeredEndpoints;
+    // ── Per-endpoint config ─────────────────────────────────────────────────
+    /// @notice Gas share in basis points (0–10 000). Default = 10 000 (100%).
+    mapping(bytes32 => uint16) public endpointSponsorshipBps;
 
-    // Events
-    event GasSponsored(address indexed agent, bytes32 indexed endpointHash, uint256 gasUsed);
+    // ── Events ──────────────────────────────────────────────────────────────
+    event GasSponsored(
+        address indexed agent,
+        bytes32 indexed endpointHash,
+        uint256 gasUsed,
+        uint16  sponsorshipBps
+    );
     event DailyBudgetSet(uint256 newBudget);
-    event EndpointRegistered(bytes32 indexed endpointHash);
-    event EndpointDeregistered(bytes32 indexed endpointHash);
+    event EndpointSponsorshipSet(bytes32 indexed endpointHash, uint16 bps);
     event BudgetReset(uint256 timestamp);
 
     constructor(
         IEntryPoint _entryPoint,
         uint256 _dailyBudget
     ) BasePaymaster(_entryPoint) {
-        dailyBudget = _dailyBudget;
+        dailyBudget        = _dailyBudget;
         lastResetTimestamp = block.timestamp;
     }
 
+    // ── Publisher interface ─────────────────────────────────────────────────
+
     /**
-     * @notice Register an endpoint hash that this paymaster will sponsor
+     * @notice Set gas sponsorship % for an endpoint by URL.
+     *         Any address can call — publisher sets this for their own endpoints.
+     * @param  url URL of the endpoint (keccak256 used as key)
+     * @param  bps Sponsorship in basis points (0 = no sponsorship, 10000 = 100%)
      */
-    function registerEndpoint(string calldata url) external onlyOwner {
+    function setEndpointSponsorshipByUrl(string calldata url, uint16 bps) external {
+        require(bps <= 10000, "bps > 10000");
         bytes32 hash = keccak256(abi.encodePacked(url));
-        registeredEndpoints[hash] = true;
-        emit EndpointRegistered(hash);
+        endpointSponsorshipBps[hash] = bps;
+        emit EndpointSponsorshipSet(hash, bps);
     }
 
     /**
-     * @notice Deregister an endpoint
+     * @notice Set gas sponsorship % for an endpoint by pre-computed hash.
      */
-    function deregisterEndpoint(string calldata url) external onlyOwner {
-        bytes32 hash = keccak256(abi.encodePacked(url));
-        registeredEndpoints[hash] = false;
-        emit EndpointDeregistered(hash);
+    function setEndpointSponsorship(bytes32 endpointHash, uint16 bps) external {
+        require(bps <= 10000, "bps > 10000");
+        endpointSponsorshipBps[endpointHash] = bps;
+        emit EndpointSponsorshipSet(endpointHash, bps);
     }
 
-    /**
-     * @notice Set a new daily budget
-     */
+    // ── Owner-only config ───────────────────────────────────────────────────
+
     function setDailyBudget(uint256 _dailyBudget) external onlyOwner {
         dailyBudget = _dailyBudget;
         emit DailyBudgetSet(_dailyBudget);
     }
 
-    /**
-     * @notice Get remaining budget for today
-     */
     function getRemainingBudget() external view returns (uint256) {
-        if (block.timestamp >= lastResetTimestamp + 1 days) {
-            return dailyBudget;
-        }
-        if (dailyBudget > dailySpent) {
-            return dailyBudget - dailySpent;
-        }
-        return 0;
+        if (block.timestamp >= lastResetTimestamp + 1 days) return dailyBudget;
+        return dailyBudget > dailySpent ? dailyBudget - dailySpent : 0;
     }
 
-    /**
-     * @notice Get total gas sponsored across all time
-     */
     function getTotalSponsored() external view returns (uint256) {
         return totalSponsored;
     }
 
-    /**
-     * @notice Reset daily counter (callable by anyone after 24h)
-     */
     function resetDailyBudget() external {
-        require(block.timestamp >= lastResetTimestamp + 1 days, "Too early to reset");
-        dailySpent = 0;
+        require(block.timestamp >= lastResetTimestamp + 1 days, "Too early");
+        dailySpent         = 0;
         lastResetTimestamp = block.timestamp;
         emit BudgetReset(block.timestamp);
     }
 
-    /**
-     * @notice Withdraw unused funds
-     */
     function withdrawFunds(address payable recipient, uint256 amount) external onlyOwner {
         entryPoint.withdrawTo(recipient, amount);
     }
 
+    // ── ERC-4337 validation ─────────────────────────────────────────────────
+
     /**
-     * @notice Internal validation — checks daily budget and accepts all ops
+     * @dev paymasterAndData layout (ERC-4337 v0.7):
+     *   [0:20]  paymaster address
+     *   [20:36] paymasterVerificationGasLimit (uint128)
+     *   [36:52] paymasterPostOpGasLimit (uint128)
+     *   [52:84] endpointHash (bytes32)  ← our custom data
      */
     function _validatePaymasterUserOp(
         PackedUserOperation calldata userOp,
         bytes32 userOpHash,
         uint256 maxCost
     ) internal override returns (bytes memory context, uint256 validationData) {
-        // Reset daily budget if 24h has passed
+        // ── Decode endpoint hash from paymasterData ──────────────────────────
+        bytes32 endpointHash;
+        if (userOp.paymasterAndData.length >= 84) {
+            endpointHash = bytes32(userOp.paymasterAndData[52:84]);
+        }
+
+        // ── Resolve sponsorship bps (default 100% if not set) ───────────────
+        uint16 bps = endpointHash != bytes32(0) ? endpointSponsorshipBps[endpointHash] : 0;
+        if (bps == 0) bps = 10000; // default: full sponsorship
+
+        // ── Reset daily budget if 24h passed ────────────────────────────────
         if (block.timestamp >= lastResetTimestamp + 1 days) {
-            dailySpent = 0;
+            dailySpent         = 0;
             lastResetTimestamp = block.timestamp;
             emit BudgetReset(block.timestamp);
         }
 
-        // Check daily budget
-        require(dailySpent + maxCost <= dailyBudget, "Daily gas budget exceeded");
+        // ── Budget check: only count the sponsored portion ──────────────────
+        uint256 coveredCost = (maxCost * bps) / 10000;
+        require(dailySpent + coveredCost <= dailyBudget, "Daily gas budget exceeded");
+        dailySpent += coveredCost;
 
-        // Update spent (will be refined in postOp with actual cost)
-        dailySpent += maxCost;
-
-        // Return context with sender for postOp
-        context = abi.encode(userOp.sender, userOpHash, maxCost);
-        validationData = 0; // valid immediately, no time range
+        context        = abi.encode(userOp.sender, userOpHash, maxCost, bps, endpointHash);
+        validationData = 0;
     }
 
     /**
-     * @notice Post-op: update stats with actual gas used
+     * @dev Post-op: refine budget with actual gas, emit event.
      */
     function _postOp(
-        PostOpMode mode,
+        PostOpMode /*mode*/,
         bytes calldata context,
         uint256 actualGasCost,
-        uint256 actualUserOpFeePerGas
+        uint256 /*actualUserOpFeePerGas*/
     ) internal override {
-        (address agent, bytes32 userOpHash, uint256 maxCost) = abi.decode(
-            context,
-            (address, bytes32, uint256)
-        );
+        (
+            address agent,
+            bytes32 userOpHash,
+            uint256 maxCost,
+            uint16  bps,
+            bytes32 endpointHash
+        ) = abi.decode(context, (address, bytes32, uint256, uint16, bytes32));
+
+        // Covered costs at max vs actual
+        uint256 coveredMax    = (maxCost      * bps) / 10000;
+        uint256 coveredActual = (actualGasCost * bps) / 10000;
 
         // Refund over-reserved budget
-        if (maxCost > actualGasCost && dailySpent >= maxCost - actualGasCost) {
-            dailySpent -= (maxCost - actualGasCost);
+        if (coveredMax > coveredActual && dailySpent >= coveredMax - coveredActual) {
+            dailySpent -= (coveredMax - coveredActual);
         }
 
-        totalSponsored += actualGasCost;
-        totalCalls += 1;
+        totalSponsored += coveredActual;
+        totalCalls     += 1;
 
-        emit GasSponsored(agent, userOpHash, actualGasCost);
+        emit GasSponsored(agent, endpointHash != bytes32(0) ? endpointHash : userOpHash, coveredActual, bps);
     }
 }

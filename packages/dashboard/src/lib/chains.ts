@@ -42,7 +42,7 @@ export type NetworkId = keyof typeof NETWORKS;
 export const DEPLOYMENTS = {
   baseSepolia: {
     publisherRegistry: "0xfbcee3e39a0909549fbc28cac37141d01f946189" as `0x${string}`,
-    paymaster: "0xf75bf95c4158B69b185191C218E723e21F302A21" as `0x${string}`,
+    paymaster: "0x83da591891e83a978deA8640Ddc7F047fdbEf75D" as `0x${string}`,
     entryPoint: "0x0000000071727De22E5E9d8BAf0edAc6f37da032" as `0x${string}`,
     deployer: "0x05a7Ae061c14847e0B70f7851d76FC10289d69b0" as `0x${string}`,
     deployedAt: "2026-04-03T21:46:49.761Z",

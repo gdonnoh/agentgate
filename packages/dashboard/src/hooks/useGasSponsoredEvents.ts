@@ -8,13 +8,14 @@ export interface GasSponsoredEvent {
   agent: Address;
   endpointHash: `0x${string}`;
   gasUsed: bigint;
+  sponsorshipBps: number;
   txHash: `0x${string}`;
   blockNumber: bigint;
   timestamp: number;
 }
 
 const PAYMASTER_ABI_EVENT = parseAbiItem(
-  "event GasSponsored(address indexed agent, bytes32 indexed endpointHash, uint256 gasUsed)"
+  "event GasSponsored(address indexed agent, bytes32 indexed endpointHash, uint256 gasUsed, uint16 sponsorshipBps)"
 );
 
 // Only Base Sepolia has a real Paymaster; Hedera paymaster is unverified
@@ -73,11 +74,12 @@ export function useGasSponsoredEvents(networkId: NetworkId, limit = 10) {
                 timestamp = Number(block.timestamp);
               } catch {}
               return {
-                agent:        log.args.agent as Address,
-                endpointHash: log.args.endpointHash as `0x${string}`,
-                gasUsed:      log.args.gasUsed as bigint,
-                txHash:       log.transactionHash as `0x${string}`,
-                blockNumber:  log.blockNumber!,
+                agent:          log.args.agent as Address,
+                endpointHash:   log.args.endpointHash as `0x${string}`,
+                gasUsed:        log.args.gasUsed as bigint,
+                sponsorshipBps: Number(log.args.sponsorshipBps ?? 10000),
+                txHash:         log.transactionHash as `0x${string}`,
+                blockNumber:    log.blockNumber!,
                 timestamp,
               };
             })

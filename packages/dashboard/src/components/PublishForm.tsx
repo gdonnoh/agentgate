@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import { keccak256, toBytes, type Hex } from "viem";
 import { NetworkId, NETWORKS, DEPLOYMENTS } from "../lib/chains";
 import { useWallet } from "../hooks/useWallet";
 
@@ -12,6 +13,19 @@ const REGISTRY_ABI = [
       { name: "paymasterAddress", type: "address" },
     ],
     outputs: [{ name: "id", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+] as const;
+
+const PAYMASTER_ABI = [
+  {
+    name: "setEndpointSponsorshipByUrl",
+    type: "function",
+    inputs: [
+      { name: "url", type: "string"  },
+      { name: "bps", type: "uint16" },
+    ],
+    outputs: [],
     stateMutability: "nonpayable",
   },
 ] as const;
@@ -75,6 +89,7 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
   // Form fields
   const [url,           setUrl]           = useState("");
   const [price,         setPrice]         = useState("0.01");
+  const [gasSharePct,   setGasSharePct]   = useState(100); // 0-100 %
   const [pmMode,        setPmMode]        = useState<PaymasterMode>("deployed");
   const [customPm,      setCustomPm]      = useState("");
   const [selectedNet,   setSelectedNet]   = useState<NetworkId>(networkId);
@@ -85,6 +100,7 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
 
   // Publish state
   const [publishing,    setPublishing]    = useState(false);
+  const [publishStep,   setPublishStep]   = useState<string>("");
   const [publishResult, setPublishResult] = useState<PublishResult | null>(null);
   const [publishError,  setPublishError]  = useState<string | null>(null);
 
@@ -183,21 +199,47 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
     setPublishing(true);
     setPublishError(null);
     setPublishResult(null);
+    setPublishStep("");
 
     try {
       const priceUnits = BigInt(Math.round(parseFloat(price) * 1_000_000));
-      const hash = await wallet.writeContract(
+
+      // Step 1: Register endpoint on PublisherRegistry
+      setPublishStep("1/2 Registering endpoint on-chain…");
+      const regHash = await wallet.writeContract(
         selectedNet,
         DEPLOYMENTS[selectedNet].publisherRegistry,
         REGISTRY_ABI as any,
         "registerEndpoint",
         [url.trim(), priceUnits, paymasterAddress]
       );
-      setPublishResult({ txHash: hash, networkId: selectedNet });
+
+      // Step 2: Set gas sponsorship on Paymaster (only for our deployed paymaster)
+      let sponsorHash: string | null = null;
+      if (pmMode === "deployed" && gasSharePct >= 0) {
+        setPublishStep("2/2 Setting gas sponsorship on Paymaster…");
+        try {
+          const bps = Math.round(gasSharePct * 100); // 100% → 10000 bps
+          sponsorHash = await wallet.writeContract(
+            selectedNet,
+            DEPLOYMENTS[selectedNet].paymaster,
+            PAYMASTER_ABI as any,
+            "setEndpointSponsorshipByUrl",
+            [url.trim(), bps]
+          );
+        } catch (sponsorErr: any) {
+          // Non-blocking — registry registration is the main step
+          console.warn("Sponsorship set failed:", sponsorErr.message);
+        }
+      }
+
+      setPublishStep("");
+      setPublishResult({ txHash: regHash, networkId: selectedNet });
     } catch (e: any) {
       setPublishError(e.shortMessage || e.message);
     } finally {
       setPublishing(false);
+      setPublishStep("");
     }
   }
 
@@ -395,6 +437,88 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
         </div>
       </Field>
 
+      {/* ── Gas Sponsorship Slider ─────────────────────────────────────────── */}
+      {pmMode === "deployed" && (
+        <Field
+          label="Gas Sponsorship"
+          hint="— % of gas you cover for agents calling this endpoint"
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* Slider */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <input
+                type="range"
+                min={0} max={100} step={5}
+                value={gasSharePct}
+                onChange={(e) => setGasSharePct(Number(e.target.value))}
+                style={{ flex: 1, accentColor: net.color, cursor: "pointer" }}
+              />
+              <div style={{
+                minWidth: 52, textAlign: "center",
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 16, fontWeight: 700,
+                color: gasSharePct >= 75 ? "#4ade80" : gasSharePct >= 40 ? net.color : "#f87171",
+              }}>
+                {gasSharePct}%
+              </div>
+            </div>
+
+            {/* Labels */}
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "#444" }}>
+              <span>agent pays gas</span>
+              <span>you pay gas</span>
+            </div>
+
+            {/* Context callout */}
+            <div style={{
+              padding: "10px 14px", borderRadius: 6,
+              background: gasSharePct >= 75 ? "#0a1a0a" : gasSharePct >= 40 ? "#0a0f1a" : "#1a0a0a",
+              border: `1px solid ${gasSharePct >= 75 ? "#1a3a1a" : gasSharePct >= 40 ? "#1a2a3a" : "#3a1a1a"}`,
+              fontSize: 11, lineHeight: 1.5,
+            }}>
+              {gasSharePct === 100 && (
+                <span style={{ color: "#4ade80" }}>
+                  🏆 <strong>Maximum appeal</strong> — you sponsor 100% of gas. Agents pay nothing. 
+                  Recommended to attract all AI agents.
+                </span>
+              )}
+              {gasSharePct >= 50 && gasSharePct < 100 && (
+                <span style={{ color: net.color }}>
+                  ⚡ <strong>Balanced</strong> — you sponsor {gasSharePct}% of gas.
+                  Effective daily budget: {(gasSharePct / 100).toFixed(2)}× per call.
+                  More calls per day vs 100%.
+                </span>
+              )}
+              {gasSharePct > 0 && gasSharePct < 50 && (
+                <span style={{ color: "#f59e0b" }}>
+                  ⚠ <strong>Low appeal</strong> — only {gasSharePct}% sponsored.
+                  Agents prefer fully-sponsored endpoints. Consider increasing.
+                </span>
+              )}
+              {gasSharePct === 0 && (
+                <span style={{ color: "#f87171" }}>
+                  ✗ <strong>No sponsorship</strong> — agents must hold {net.currency} for gas.
+                  This endpoint will not attract AI agents without wallets.
+                </span>
+              )}
+            </div>
+
+            {/* Competitive breakdown */}
+            <div style={{
+              display: "flex", gap: 6,
+              fontSize: 10, color: "#555",
+              fontFamily: "'JetBrains Mono', monospace",
+            }}>
+              <span>daily budget: 0.01 {net.currency}</span>
+              <span style={{ color: "#333" }}>·</span>
+              <span>effective/call: ≤{(0.01 * gasSharePct / 100).toFixed(5)} {net.currency}</span>
+              <span style={{ color: "#333" }}>·</span>
+              <span>est. calls/day: ~{gasSharePct > 0 ? Math.floor(0.01 / (0.0003 * gasSharePct / 100)) : "∞"}</span>
+            </div>
+          </div>
+        </Field>
+      )}
+
       {/* ── Paymaster address preview ───────────────────────────────────────── */}
       <div style={{
         display: "flex", alignItems: "center", gap: 8,
@@ -405,6 +529,11 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
         <span style={{ fontSize: 10, color: "#666", fontFamily: "'JetBrains Mono', monospace", flex: 1 }}>
           {paymasterAddress}
         </span>
+        {pmMode === "deployed" && (
+          <span style={{ fontSize: 9, color: "#4ade80" }}>
+            staked ✓
+          </span>
+        )}
       </div>
 
       {/* ── Wallet + Publish ───────────────────────────────────────────────── */}
@@ -454,11 +583,18 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
             transition: "all 0.2s",
           }}
         >
-          {publishing ? "publishing…" :
-           !testResult?.ok ? "run test first" :
-           !wallet.state.connected ? "🔗 connect wallet + publish" :
-           wrongNetwork ? `switch to ${NETWORKS[selectedNet].label}` :
-           "publish on-chain →"}
+          {publishing
+            ? (publishStep || "publishing…")
+            : !testResult?.ok
+            ? "run test first"
+            : !wallet.state.connected
+            ? "🔗 connect wallet + publish"
+            : wrongNetwork
+            ? `switch to ${NETWORKS[selectedNet].label}`
+            : pmMode === "deployed"
+            ? `publish on-chain (${gasSharePct}% gas sponsored) →`
+            : "publish on-chain →"
+          }
         </button>
 
         {/* Publish error */}
@@ -488,6 +624,7 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
                 ["URL",      url],
                 ["Price",    "$" + price + " USDC"],
                 ["Paymaster", paymasterAddress.slice(0, 12) + "…"],
+                ["Gas share", pmMode === "deployed" ? `${gasSharePct}% (on-chain)` : "—"],
                 ["Tx hash",  publishResult.txHash],
               ].map(([k, v]) => (
                 <div key={k} style={{ display: "flex", gap: 8 }}>

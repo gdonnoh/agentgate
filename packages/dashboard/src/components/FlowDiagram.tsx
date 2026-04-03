@@ -524,6 +524,9 @@ export function FlowDiagram({ networkId, totalCalls }: Props) {
                   <span style={{ fontSize: 9, color: "#555", flexShrink: 0 }}>
                     gas: {ev.gasUsed.toLocaleString()}
                   </span>
+                  <span style={{ fontSize: 9, color: "#4ade80", flexShrink: 0 }}>
+                    {Math.round(ev.sponsorshipBps / 100)}% sponsored
+                  </span>
                   <a
                     href={`https://sepolia.basescan.org/tx/${ev.txHash}`}
                     target="_blank"
