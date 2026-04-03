@@ -22,6 +22,8 @@ const config: HardhatUserConfig = {
       url: process.env.HEDERA_TESTNET_RPC || "https://testnet.hashio.io/api",
       accounts: [PRIVATE_KEY],
       chainId: 296,
+      gasPrice: 1200000000000, // 1200 Gwei — Hedera testnet minimum (~1020 Gwei)
+      gas: 3000000,
     },
     baseSepolia: {
       url: process.env.BASE_SEPOLIA_RPC || "https://sepolia.base.org",

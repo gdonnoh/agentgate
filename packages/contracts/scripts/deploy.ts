@@ -1,95 +1,169 @@
 import { ethers } from "hardhat";
-import * as dotenv from "dotenv";
+import * as fs from "fs";
 import * as path from "path";
+import * as dotenv from "dotenv";
 
 dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 
-// ERC-4337 EntryPoint v0.7 addresses (same across all EVM chains)
-const ENTRYPOINT_ADDRESSES: Record<string, string> = {
-  hedera: "0x0000000000000000000000000000000000000000", // Placeholder — deploy your own on Hedera
-  baseSepolia: "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789", // Official v0.6
-  hardhat: "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789",
-};
+// ERC-4337 EntryPoint v0.7 — deployed on Hedera testnet and Base Sepolia
+const ENTRYPOINT_V07 = "0x0000000071727De22E5E9d8BAf0edAc6f37da032";
+
+const HASHSCAN_BASE = "https://hashscan.io/testnet";
+const BASESCAN_BASE = "https://sepolia.basescan.org";
+
+function explorerTx(network: string, txHash: string): string {
+  if (network === "hedera") return `${HASHSCAN_BASE}/tx/${txHash}`;
+  if (network === "baseSepolia") return `${BASESCAN_BASE}/tx/${txHash}`;
+  return txHash;
+}
+
+function explorerContract(network: string, address: string): string {
+  if (network === "hedera") return `${HASHSCAN_BASE}/contract/${address}`;
+  if (network === "baseSepolia") return `${BASESCAN_BASE}/address/${address}`;
+  return address;
+}
 
 async function main() {
   const [deployer] = await ethers.getSigners();
-  const network = (await ethers.provider.getNetwork()).name;
+  const networkObj = await ethers.provider.getNetwork();
+  const networkName = process.env.HARDHAT_NETWORK || "hardhat";
+  const chainId = Number(networkObj.chainId);
+  const nativeCurrency = chainId === 296 ? "HBAR" : "ETH";
 
-  console.log(`\n🚀 Deploying AgentGate contracts`);
-  console.log(`📡 Network: ${network} (chainId: ${(await ethers.provider.getNetwork()).chainId})`);
-  console.log(`👤 Deployer: ${deployer.address}`);
-  console.log(`💰 Balance: ${ethers.formatEther(await ethers.provider.getBalance(deployer.address))} ETH\n`);
+  const balance = await ethers.provider.getBalance(deployer.address);
 
-  // 1. Deploy PublisherRegistry
-  console.log("📝 Deploying PublisherRegistry...");
-  const PublisherRegistry = await ethers.getContractFactory("PublisherRegistry");
-  const registry = await PublisherRegistry.deploy();
-  await registry.waitForDeployment();
-  const registryAddress = await registry.getAddress();
-  console.log(`✅ PublisherRegistry deployed: ${registryAddress}`);
+  console.log("\n" + "=".repeat(60));
+  console.log("🚀 AgentGate Contract Deployment");
+  console.log("=".repeat(60));
+  console.log(`📡 Network:   ${networkName} (chainId: ${chainId})`);
+  console.log(`👤 Deployer:  ${deployer.address}`);
+  console.log(`💰 Balance:   ${ethers.formatEther(balance)} ${nativeCurrency}`);
+  console.log("=".repeat(60) + "\n");
 
-  // 2. Deploy AgentGatePaymaster
-  const entryPointAddress = ENTRYPOINT_ADDRESSES[network] || ENTRYPOINT_ADDRESSES["hardhat"];
-  const dailyBudget = ethers.parseEther("0.01"); // 0.01 ETH daily budget
-
-  console.log(`\n⛽ Deploying AgentGatePaymaster...`);
-  console.log(`   EntryPoint: ${entryPointAddress}`);
-  console.log(`   Daily budget: ${ethers.formatEther(dailyBudget)} ETH`);
-
-  const AgentGatePaymaster = await ethers.getContractFactory("AgentGatePaymaster");
-  const paymaster = await AgentGatePaymaster.deploy(entryPointAddress, dailyBudget);
-  await paymaster.waitForDeployment();
-  const paymasterAddress = await paymaster.getAddress();
-  console.log(`✅ AgentGatePaymaster deployed: ${paymasterAddress}`);
-
-  // 3. Fund the Paymaster with a small initial deposit
-  console.log(`\n💸 Funding Paymaster with 0.005 ETH...`);
-  try {
-    const fundTx = await paymaster.deposit({ value: ethers.parseEther("0.005") });
-    await fundTx.wait();
-    console.log(`✅ Paymaster funded. Tx: ${fundTx.hash}`);
-  } catch (e) {
-    console.log(`⚠️  Funding skipped (EntryPoint may not be deployed on this network)`);
+  if (balance === 0n) {
+    console.error("❌ Deployer has zero balance. Fund the address first:");
+    if (networkName === "hedera") {
+      console.error(`   Hedera portal: https://portal.hedera.com/`);
+      console.error(`   Address: ${deployer.address}`);
+    }
+    process.exit(1);
   }
 
-  // 4. Register a demo endpoint
-  console.log(`\n🌐 Registering demo weather endpoint...`);
-  const registerTx = await registry.registerEndpoint(
-    "https://agentgate.demo/api/weather",
-    10000, // $0.01 USDC (6 decimals)
+  const entryPointAddr = process.env.ENTRYPOINT_ADDRESS || ENTRYPOINT_V07;
+  console.log(`⚙️  EntryPoint: ${entryPointAddr}`);
+
+  // ── 1. Deploy PublisherRegistry ──────────────────────────────────────────
+  console.log("\n📝 [1/4] Deploying PublisherRegistry...");
+  const RegistryFactory = await ethers.getContractFactory("PublisherRegistry");
+  const registry = await RegistryFactory.deploy();
+  await registry.waitForDeployment();
+
+  const registryAddress = await registry.getAddress();
+  const registryTxHash = registry.deploymentTransaction()?.hash || "N/A";
+
+  console.log(`✅ PublisherRegistry:  ${registryAddress}`);
+  console.log(`   Tx:  ${registryTxHash}`);
+  console.log(`   🔗  ${explorerContract(networkName, registryAddress)}`);
+
+  // ── 2. Deploy AgentGatePaymaster ─────────────────────────────────────────
+  console.log("\n⛽ [2/4] Deploying AgentGatePaymaster...");
+  const dailyBudget = ethers.parseEther("0.01");
+  const PaymasterFactory = await ethers.getContractFactory("AgentGatePaymaster");
+  const paymaster = await PaymasterFactory.deploy(entryPointAddr, dailyBudget);
+  await paymaster.waitForDeployment();
+
+  const paymasterAddress = await paymaster.getAddress();
+  const paymasterTxHash = paymaster.deploymentTransaction()?.hash || "N/A";
+
+  console.log(`✅ AgentGatePaymaster: ${paymasterAddress}`);
+  console.log(`   Tx:  ${paymasterTxHash}`);
+  console.log(`   🔗  ${explorerContract(networkName, paymasterAddress)}`);
+
+  // ── 3. Register weather endpoint on-chain ────────────────────────────────
+  console.log("\n🌐 [3/4] Registering weather endpoint on-chain...");
+  const weatherUrl = "https://agentgate.demo/api/weather";
+  const pricePerCall = 10000n; // $0.01 USDC
+
+  const registerTx = await (registry as any).registerEndpoint(
+    weatherUrl,
+    pricePerCall,
     paymasterAddress
   );
   await registerTx.wait();
-  console.log(`✅ Demo endpoint registered. Tx: ${registerTx.hash}`);
+  const registerTxHash = registerTx.hash;
 
-  // Summary
-  console.log(`\n${"=".repeat(60)}`);
-  console.log(`🎉 DEPLOYMENT COMPLETE`);
-  console.log(`${"=".repeat(60)}`);
-  console.log(`PublisherRegistry:   ${registryAddress}`);
-  console.log(`AgentGatePaymaster:  ${paymasterAddress}`);
-  console.log(`Network:             ${network}`);
-  console.log(`${"=".repeat(60)}\n`);
+  console.log(`✅ Endpoint registered`);
+  console.log(`   URL:   ${weatherUrl}`);
+  console.log(`   Price: $0.01 USDC | Paymaster: ${paymasterAddress}`);
+  console.log(`   Tx:  ${registerTxHash}`);
+  console.log(`   🔗  ${explorerTx(networkName, registerTxHash)}`);
 
-  // Save addresses to a JSON file for other packages to use
-  const addresses = {
-    network,
-    chainId: Number((await ethers.provider.getNetwork()).chainId),
-    PublisherRegistry: registryAddress,
-    AgentGatePaymaster: paymasterAddress,
+  // ── 4. Fund Paymaster ────────────────────────────────────────────────────
+  console.log(`\n💸 [4/4] Funding Paymaster with 0.005 ${nativeCurrency}...`);
+  let fundTxHash = "skipped";
+  try {
+    const fundAmount = ethers.parseEther("0.005");
+    const fundTx = await (paymaster as any).deposit({ value: fundAmount });
+    await fundTx.wait();
+    fundTxHash = fundTx.hash;
+    console.log(`✅ Paymaster funded`);
+    console.log(`   Tx:  ${fundTxHash}`);
+    console.log(`   🔗  ${explorerTx(networkName, fundTxHash)}`);
+  } catch (err: any) {
+    console.warn(`⚠️  Funding skipped: ${err.message.split("\n")[0]}`);
+  }
+
+  // ── Save deployments.json ─────────────────────────────────────────────────
+  const deploymentsPath = path.resolve(__dirname, "../deployments.json");
+  let allDeployments: Record<string, any> = {};
+  if (fs.existsSync(deploymentsPath)) {
+    allDeployments = JSON.parse(fs.readFileSync(deploymentsPath, "utf-8"));
+  }
+
+  const deployment = {
+    network: networkName,
+    chainId,
+    deployer: deployer.address,
+    publisherRegistry: registryAddress,
+    paymaster: paymasterAddress,
+    entryPoint: entryPointAddr,
+    deployTxHash: registryTxHash,
+    paymasterDeployTxHash: paymasterTxHash,
+    registerEndpointTxHash: registerTxHash,
+    fundTxHash,
+    weatherEndpoint: weatherUrl,
     deployedAt: new Date().toISOString(),
+    explorer: {
+      publisherRegistry: explorerContract(networkName, registryAddress),
+      paymaster: explorerContract(networkName, paymasterAddress),
+      deployTx: explorerTx(networkName, registryTxHash),
+      registerTx: explorerTx(networkName, registerTxHash),
+    },
   };
 
-  const fs = await import("fs");
-  const outputPath = path.resolve(__dirname, `../deployments/${network}.json`);
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  fs.writeFileSync(outputPath, JSON.stringify(addresses, null, 2));
-  console.log(`📄 Addresses saved to deployments/${network}.json`);
+  allDeployments[networkName] = deployment;
+  fs.writeFileSync(deploymentsPath, JSON.stringify(allDeployments, null, 2));
+  console.log(`\n📄 Saved → packages/contracts/deployments.json`);
 
-  return addresses;
+  // ── Summary ───────────────────────────────────────────────────────────────
+  console.log("\n" + "=".repeat(60));
+  console.log("🎉 DEPLOYMENT COMPLETE");
+  console.log("=".repeat(60));
+  console.log(`PublisherRegistry:     ${registryAddress}`);
+  console.log(`AgentGatePaymaster:    ${paymasterAddress}`);
+  console.log(`EntryPoint:            ${entryPointAddr}`);
+  console.log(`\n🔗 ${networkName === "hedera" ? "HashScan" : "Basescan"} links:`);
+  console.log(`   Registry:   ${explorerContract(networkName, registryAddress)}`);
+  console.log(`   Paymaster:  ${explorerContract(networkName, paymasterAddress)}`);
+  console.log(`   Deploy tx:  ${explorerTx(networkName, registryTxHash)}`);
+  console.log(`   Register:   ${explorerTx(networkName, registerTxHash)}`);
+  if (fundTxHash !== "skipped") {
+    console.log(`   Fund tx:    ${explorerTx(networkName, fundTxHash)}`);
+  }
+  console.log("=".repeat(60) + "\n");
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
+main().catch((err) => {
+  console.error("\n❌ Deployment failed:", err.message);
+  process.exit(1);
 });

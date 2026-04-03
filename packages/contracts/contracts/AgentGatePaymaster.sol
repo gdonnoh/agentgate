@@ -3,14 +3,14 @@ pragma solidity ^0.8.24;
 
 import "@account-abstraction/contracts/core/BasePaymaster.sol";
 import "@account-abstraction/contracts/interfaces/IEntryPoint.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
  * @title AgentGatePaymaster
  * @notice ERC-4337 Paymaster that sponsors gas for AI agents calling registered endpoints.
  *         Deployed by each publisher to attract more agent traffic.
+ *         BasePaymaster already inherits Ownable — no need to re-import.
  */
-contract AgentGatePaymaster is BasePaymaster, Ownable {
+contract AgentGatePaymaster is BasePaymaster {
     // Daily budget tracking
     uint256 public dailyBudget;
     uint256 public dailySpent;
@@ -33,7 +33,7 @@ contract AgentGatePaymaster is BasePaymaster, Ownable {
     constructor(
         IEntryPoint _entryPoint,
         uint256 _dailyBudget
-    ) BasePaymaster(_entryPoint) Ownable(msg.sender) {
+    ) BasePaymaster(_entryPoint) {
         dailyBudget = _dailyBudget;
         lastResetTimestamp = block.timestamp;
     }
@@ -92,13 +92,6 @@ contract AgentGatePaymaster is BasePaymaster, Ownable {
         dailySpent = 0;
         lastResetTimestamp = block.timestamp;
         emit BudgetReset(block.timestamp);
-    }
-
-    /**
-     * @notice Deposit ETH to fund gas sponsorship
-     */
-    function deposit() external payable {
-        entryPoint.depositTo{value: msg.value}(address(this));
     }
 
     /**
