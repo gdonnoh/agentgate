@@ -117,8 +117,8 @@ export function PublishForm({
   // A typical Hedera EVM call uses ~50,000–80,000 gas; we use 65,000 as the midpoint.
   const [gasPrice,      setGasPrice]      = useState<bigint>(1_200_000_000_000n); // 1200 Gwei fallback
 
-  // Proxy Mode — default ON (most users don't have their own endpoint)
-  const [proxyEnabled,  setProxyEnabled]  = useState(true);
+  // Proxy Mode — always on (all endpoints go through AgentGate, guaranteeing x402 + WorldID)
+  const proxyEnabled = true;
   const [backendUrl,    setBackendUrl]    = useState("");
   const [headerRows,    setHeaderRows]    = useState<{key: string; val: string}[]>([{ key: "", val: "" }]);
   const [proxyDone,     setProxyDone]     = useState<string | null>(null); // proxyUrl
@@ -143,7 +143,6 @@ export function PublishForm({
     setProxyDone(null);
     setProxyError(null);
     if (t === "vacation") {
-      setProxyEnabled(true);
       setBackendUrl("https://api.anthropic.com/v1/messages");
       setPrice("0.02");
       setUrl(""); // filled by useEffect: …/api/proxy/<nextId>
@@ -152,10 +151,9 @@ export function PublishForm({
         { key: "anthropic-version", val: "2023-06-01" },
       ]);
     } else {
-      setProxyEnabled(false);
-      setBackendUrl("");
+      setBackendUrl("https://jsonplaceholder.typicode.com/todos/1");
       setPrice("0.03");
-      setUrl("https://jsonplaceholder.typicode.com/posts/1");
+      setUrl("");
       setHeaderRows([{ key: "", val: "" }]);
     }
   }, []);
@@ -508,34 +506,9 @@ export function PublishForm({
         </span>
       </div>
 
-      {/* ── Mode selector ───────────────────────────────────────────────────── */}
-      <div style={{ display: "flex", gap: 8 }}>
-        {[
-          { on: true,  label: "🔀 AgentGate Proxy", sub: "I'll provide a backend API key" },
-          { on: false, label: "🔗 My Own Endpoint",  sub: "I have an x402-ready URL" },
-        ].map(({ on, label, sub }) => (
-          <button
-            key={String(on)}
-            type="button"
-            onClick={() => { setProxyEnabled(on); setTestResult(null); setPublishResult(null); setPublishError(null); }}
-            style={{
-              flex: 1, padding: "10px 12px", borderRadius: 7, cursor: "pointer", textAlign: "left",
-              border: `1px solid ${proxyEnabled === on ? net.color : "#252525"}`,
-              background: proxyEnabled === on ? `${net.color}14` : "#080808",
-              transition: "all 0.18s",
-            }}
-          >
-            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700,
-              color: proxyEnabled === on ? net.color : "#555" }}>{label}</div>
-            <div style={{ fontSize: 10, color: proxyEnabled === on ? `${net.color}99` : "#333", marginTop: 3 }}>{sub}</div>
-          </button>
-        ))}
-      </div>
-
-      {/* ── Proxy: backend URL + headers ────────────────────────────────────── */}
-      {proxyEnabled && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12,
-          padding: "14px 16px", borderRadius: 8, background: "#080808", border: "1px solid #1e1e1e" }}>
+      {/* ── Backend URL + headers ───────────────────────────────────────────── */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12,
+        padding: "14px 16px", borderRadius: 8, background: "#080808", border: "1px solid #1e1e1e" }}>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
             <span style={{ fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: "0.08em" }}>
@@ -614,33 +587,6 @@ export function PublishForm({
             </div>
           </div>
         </div>
-      )}
-
-      {/* ── Direct mode: URL input ───────────────────────────────────────────── */}
-      {!proxyEnabled && (
-        <Field label="Endpoint URL (on-chain)" hint="— must return 200 or 402">
-          <div style={{ display: "flex", gap: 8 }}>
-            <input ref={urlRef} type="url" placeholder="https://api.yourservice.com/endpoint"
-              value={url} onChange={(e) => { setUrl(e.target.value); setTestResult(null); }}
-              onKeyDown={(e) => e.key === "Enter" && handleTest()}
-              style={{ ...inputStyle, flex: 1 }} />
-            <button
-              onClick={handleTest}
-              disabled={testing || !url.trim()}
-              style={{
-                padding: "9px 16px", fontFamily: "'JetBrains Mono', monospace", fontSize: 11,
-                borderRadius: 6, cursor: testing || !url.trim() ? "default" : "pointer",
-                background: testing ? "#111" : `${net.color}22`,
-                border: `1px solid ${testing ? "#333" : net.color}`,
-                color: testing ? "#555" : net.color,
-                whiteSpace: "nowrap", transition: "all 0.2s", flexShrink: 0,
-              }}
-            >
-              {testing ? "testing…" : "▶ test"}
-            </button>
-          </div>
-        </Field>
-      )}
 
       {/* ── Test Result ─────────────────────────────────────────────────────── */}
       {testResult && (

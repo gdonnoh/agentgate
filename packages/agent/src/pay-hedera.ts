@@ -1,18 +1,16 @@
 /**
  * pay-hedera.ts
  *
- * Demonstrates a real dual-protocol flow:
+ * Demonstrates HBAR payment on Hedera Testnet via the x402 protocol.
  *
- *   1. Agent builds WorldID AgentKit proof (SIWE signed by agent wallet)
- *   2. Agent calls the endpoint WITH the agentkit header
- *      → Server verifies WorldID BEFORE issuing payment details
- *      → If not in AgentBook: 403 immediately (agent never pays)
- *      → If verified: 402 with payment details (or 200 on free trial)
- *   3. Agent sends native HBAR on Hedera Testnet
- *   4. Agent retries with PAYMENT-SIGNATURE (HBAR proof) + agentkit header
- *   5. Server verifies both → serves the response
+ * Two modes:
+ *   - With AgentKit (USE_AGENTKIT=true, default): builds WorldID proof, gets
+ *     free-trial or pays HBAR, retries with both headers.
+ *   - Wallet-only (USE_AGENTKIT=false): skips WorldID, requests endpoint
+ *     directly, pays HBAR, retries with payment header only.
  *
  * Usage: tsx src/pay-hedera.ts
+ *        USE_AGENTKIT=false tsx src/pay-hedera.ts
  */
 
 import * as dotenv from "dotenv";
@@ -36,6 +34,8 @@ const SERVER_URL        = process.env.SERVER_URL || "http://localhost:4021";
 const HEDERA_RPC        = process.env.HEDERA_TESTNET_RPC || "https://testnet.hashio.io/api";
 const MIRROR_NODE       = "https://testnet.mirrornode.hedera.com";
 
+const USE_AGENTKIT     = process.env.USE_AGENTKIT !== "false";
+
 if (!AGENT_PRIVATE_KEY) throw new Error("AGENT_PRIVATE_KEY not set in .env");
 
 // Hedera Testnet EVM chain definition
@@ -49,12 +49,13 @@ const hederaTestnet = defineChain({
   },
 });
 
-// Hedera EVM unit conversion (per Hedera JSON-RPC Relay docs):
+// Hedera EVM unit conversion:
 // 1 HBAR = 10^8 tinybars
-// 1 ETH (EVM) = 1 HBAR = 10^18 wei (EVM)
-// → 1 tinybar = 10^18 / 10^8 = 10^10 wei
-// → value_wei = tinybars * 10^10
-const WEI_PER_TINYBAR = 10_000_000_000n; // 10^10
+// 1 ETH (EVM) = 100 HBAR → 10^18 wei = 10^10 tinybars
+// → 1 tinybar = 10^18 / 10^10 = 10^8 wei
+// → value_wei = tinybars * 10^8
+const WEI_PER_TINYBAR  = 100_000_000n; // 10^8
+const HEDERA_GAS_PRICE = 1_200_000_000_000n; // 1200 Gwei — Hedera testnet minimum
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
@@ -76,57 +77,64 @@ async function main() {
   const balanceHbar = Number(balanceWei) / 1e18;
   console.log(`💰 Balance:       ${balanceHbar.toFixed(4)} HBAR`);
 
-  // ── Step 1: Build WorldID AgentKit proof FIRST (before any payment) ──────
-  // Server requires agentkit on the initial request so it can verify WorldID
-  // before issuing payment details. This prevents paying and then getting a 403.
-  console.log(`\n🆔 Step 1: Constructing WorldID AgentKit proof…`);
-
   const endpoint  = `${SERVER_URL}/api/weather/rome`;
-  const serverUrl = new URL(SERVER_URL);
-  const nonce     = Math.random().toString(36).slice(2, 18);
-  const issuedAt  = new Date().toISOString();
+  let agentKitHeader: string | null = null;
 
-  const siweInfo = {
-    domain:    serverUrl.hostname, // AgentKit validates against hostname only (no port)
-    uri:       endpoint,
-    version:   "1",
-    chainId:   "eip155:296",
-    type:      "eip191" as const,
-    nonce,
-    issuedAt,
-    statement: "Verify your agent is backed by a real human",
-  };
+  if (USE_AGENTKIT) {
+    // ── Step 1: Build WorldID AgentKit proof ──────────────────────────────────
+    console.log(`\n🆔 Step 1: Constructing WorldID AgentKit proof…`);
 
-  const siweMessage   = formatSIWEMessage(siweInfo, account.address);
-  const siweSignature = await walletClient.signMessage({ message: siweMessage });
+    const serverUrl = new URL(SERVER_URL);
+    const nonce     = Math.random().toString(36).slice(2, 18);
+    const issuedAt  = new Date().toISOString();
 
-  const agentKitPayload = {
-    domain:    siweInfo.domain,
-    address:   account.address,
-    statement: siweInfo.statement,
-    uri:       siweInfo.uri,
-    version:   siweInfo.version,
-    chainId:   siweInfo.chainId,
-    type:      "eip191",
-    nonce,
-    issuedAt,
-    signature: siweSignature,
-  };
+    const siweInfo = {
+      domain:    serverUrl.hostname,
+      uri:       endpoint,
+      version:   "1",
+      chainId:   "eip155:296",
+      type:      "eip191" as const,
+      nonce,
+      issuedAt,
+      statement: "Verify your agent is backed by a real human",
+    };
 
-  const agentKitHeader = Buffer.from(JSON.stringify(agentKitPayload)).toString("base64");
-  console.log(`   ✅ AgentKit proof built (address: ${account.address})`);
+    const siweMessage   = formatSIWEMessage(siweInfo, account.address);
+    const siweSignature = await walletClient.signMessage({ message: siweMessage });
 
-  // ── Step 2: Initial request with agentkit proof → 402 (or 200 free trial) ─
-  console.log(`\n📡 Step 2: GET ${endpoint} (with agentkit header)`);
+    const agentKitPayload = {
+      domain:    siweInfo.domain,
+      address:   account.address,
+      statement: siweInfo.statement,
+      uri:       siweInfo.uri,
+      version:   siweInfo.version,
+      chainId:   siweInfo.chainId,
+      type:      "eip191",
+      nonce,
+      issuedAt,
+      signature: siweSignature,
+    };
+
+    agentKitHeader = Buffer.from(JSON.stringify(agentKitPayload)).toString("base64");
+    console.log(`   ✅ AgentKit proof built (address: ${account.address})`);
+  } else {
+    console.log(`\n🔑 Wallet-only mode (USE_AGENTKIT=false) — skipping AgentKit proof`);
+  }
+
+  // ── Step 2: Initial request → 402 (or 200 free trial with AgentKit) ──────
+  const initialHeaders: Record<string, string> = {};
+  if (agentKitHeader) initialHeaders["agentkit"] = agentKitHeader;
+
+  console.log(`\n📡 Step 2: GET ${endpoint}${agentKitHeader ? " (with agentkit header)" : " (no agentkit)"}`);
 
   const res1 = await fetch(endpoint, {
-    headers: { "agentkit": agentKitHeader },
+    headers: initialHeaders,
   });
   console.log(`   → Status: ${res1.status} ${res1.statusText}`);
 
   if (res1.status === 403) {
     const body = await res1.text();
-    console.error(`\n🚫 WorldID check failed — NOT paying (wallet safe):`);
+    console.error(`\n🚫 Request rejected (403):`);
     console.error(`   ${body}`);
     console.log("\n" + "═".repeat(62) + "\n");
     return;
@@ -180,6 +188,8 @@ async function main() {
   const txHash = await walletClient.sendTransaction({
     to: hederaOption.payTo as Address,
     value: weiRequired,
+    gas: 3_000_000n,
+    gasPrice: HEDERA_GAS_PRICE,
   });
 
   console.log(`   ✅ Tx submitted:  ${txHash}`);
@@ -215,12 +225,12 @@ async function main() {
 
   const encodedPayment = Buffer.from(JSON.stringify(paymentPayload)).toString("base64");
 
-  console.log(`\n🔁 Step 6: Retrying with PAYMENT-SIGNATURE + agentkit headers…`);
+  const retryHeaders: Record<string, string> = { "PAYMENT-SIGNATURE": encodedPayment };
+  if (agentKitHeader) retryHeaders["agentkit"] = agentKitHeader;
+
+  console.log(`\n🔁 Step 6: Retrying with PAYMENT-SIGNATURE${agentKitHeader ? " + agentkit" : ""} headers…`);
   const res2 = await fetch(endpoint, {
-    headers: {
-      "PAYMENT-SIGNATURE": encodedPayment,
-      "agentkit":          agentKitHeader,  // WorldID proof — server verifies on World Chain
-    },
+    headers: retryHeaders,
   });
 
   console.log(`   → Status: ${res2.status} ${res2.statusText}`);
@@ -236,7 +246,7 @@ async function main() {
     console.log(`   Publisher:         ${hederaOption.payTo}`);
     console.log(`   Tx on-chain:       https://hashscan.io/testnet/tx/${txHash}`);
     console.log(`   Payment standard:  x402 on Hedera Testnet`);
-    console.log(`   Identity proof:    WorldID AgentKit (World Chain AgentBook)`);
+    console.log(`   Identity proof:    ${agentKitHeader ? "WorldID AgentKit (World Chain AgentBook)" : "None (wallet-only)"}`);
     console.log(`   Agent address:     ${account.address}`);
   } else {
     const errBody = await res2.text();
