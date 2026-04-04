@@ -18,6 +18,13 @@ export const REGISTRY_ABI = [
   { name: "getTotalEndpoints",     type: "function", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
   { name: "nextEndpointId",        type: "function", inputs: [], outputs: [{ type: "uint256" }], stateMutability: "view" },
   {
+    name: "getPublisherEndpoints",
+    type: "function",
+    inputs:  [{ name: "publisher", type: "address" }],
+    outputs: [{ name: "", type: "uint256[]" }],
+    stateMutability: "view",
+  },
+  {
     name: "endpoints",
     type: "function",
     inputs: [{ name: "id", type: "uint256" }],

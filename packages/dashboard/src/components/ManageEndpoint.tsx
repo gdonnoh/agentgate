@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { createPublicClient, http, keccak256, toHex, toBytes } from "viem";
-import { baseSepolia } from "viem/chains";
 import { hederaTestnet, NetworkId, NETWORKS, DEPLOYMENTS } from "../lib/chains";
+import { REGISTRY_ABI } from "../lib/abi";
 import { useWallet } from "../hooks/useWallet";
 
 // ── ABIs ────────────────────────────────────────────────────────────────────
@@ -56,9 +56,21 @@ const PAYMASTER_WRITE_ABI = [
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface EndpointInfo {
-  balance: bigint;      // wei / weibars
-  bps: number;          // 0–10000
+  balance: bigint;
+  bps: number;
   owner: `0x${string}`;
+}
+
+interface MyEndpoint {
+  id: number;
+  url: string;
+  pricePerCall: string;   // formatted USD
+  active: boolean;
+  totalCalls: number;
+  totalRevenue: string;   // formatted USD
+  registeredAt: Date;
+  gasBudget: bigint;      // wei from paymaster
+  gasSharePct: number;    // 0–100
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -104,6 +116,10 @@ export function ManageEndpoint({ networkId }: { networkId: NetworkId }) {
   const [selectedNet] = useState<NetworkId>("hedera");
   const [url,         setUrl]         = useState("");
 
+  // My Endpoints
+  const [myEndpoints,     setMyEndpoints]     = useState<MyEndpoint[]>([]);
+  const [myEndpointsLoading, setMyEndpointsLoading] = useState(false);
+
   // Look-up state
   const [looking,     setLooking]     = useState(false);
   const [lookError,   setLookError]   = useState<string | null>(null);
@@ -119,6 +135,82 @@ export function ManageEndpoint({ networkId }: { networkId: NetworkId }) {
 
   const selectedNetData = NETWORKS[selectedNet];
   const paymasterAddr   = DEPLOYMENTS[selectedNet].paymaster;
+
+  // ── Fetch all endpoints for connected wallet ──────────────────────────────
+
+  const fetchMyEndpoints = useCallback(async (address: `0x${string}`) => {
+    setMyEndpointsLoading(true);
+    try {
+      const chain        = hederaTestnet;
+      const publicClient = createPublicClient({ chain, transport: http(NETWORKS["hedera"].rpc) });
+      const d            = DEPLOYMENTS["hedera"];
+
+      const ids = await publicClient.readContract({
+        address: d.publisherRegistry,
+        abi: REGISTRY_ABI,
+        functionName: "getPublisherEndpoints",
+        args: [address],
+      }) as bigint[];
+
+      const results = await Promise.all(ids.map(async (id) => {
+        const ep = await publicClient.readContract({
+          address: d.publisherRegistry,
+          abi: REGISTRY_ABI,
+          functionName: "endpoints",
+          args: [id],
+        }) as readonly [bigint, `0x${string}`, string, bigint, `0x${string}`, boolean, bigint, bigint, bigint];
+
+        // Also read paymaster gas budget + share for this URL
+        let gasBudget = 0n;
+        let gasSharePct = 0;
+        try {
+          const urlHash = keccak256(toHex(toBytes(ep[2])));
+          const [bal, bps] = await Promise.all([
+            publicClient.readContract({
+              address: d.paymaster,
+              abi: PAYMASTER_READ_ABI,
+              functionName: "endpointBalance",
+              args: [urlHash],
+            }) as Promise<bigint>,
+            publicClient.readContract({
+              address: d.paymaster,
+              abi: PAYMASTER_READ_ABI,
+              functionName: "endpointGasShareBps",
+              args: [urlHash],
+            }) as Promise<number>,
+          ]);
+          gasBudget    = bal;
+          gasSharePct  = Math.round(Number(bps) / 100);
+        } catch { /* paymaster data optional */ }
+
+        return {
+          id:           Number(ep[0]),
+          url:          ep[2],
+          pricePerCall: (Number(ep[3]) / 1_000_000).toFixed(4),
+          active:       ep[5],
+          totalCalls:   Number(ep[6]),
+          totalRevenue: (Number(ep[7]) / 1_000_000).toFixed(4),
+          registeredAt: new Date(Number(ep[8]) * 1000),
+          gasBudget,
+          gasSharePct,
+        } as MyEndpoint;
+      }));
+
+      setMyEndpoints(results.filter((e) => e.url));
+    } catch (e: any) {
+      console.warn("[ManageEndpoint] fetchMyEndpoints failed:", e.message);
+    } finally {
+      setMyEndpointsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (wallet.state.connected && wallet.state.address) {
+      fetchMyEndpoints(wallet.state.address);
+    } else {
+      setMyEndpoints([]);
+    }
+  }, [wallet.state.connected, wallet.state.address, fetchMyEndpoints]);
 
   // ── Look up on-chain data ──────────────────────────────────────────────────
 
@@ -197,8 +289,163 @@ export function ManageEndpoint({ networkId }: { networkId: NetworkId }) {
   const gasSharePct  = Math.round(newBps / 100);
   const topUpFloat   = parseFloat(topUpAmt) || 0;
 
+  const totalRevenue = myEndpoints.reduce((s, e) => s + parseFloat(e.totalRevenue), 0);
+  const totalCalls   = myEndpoints.reduce((s, e) => s + e.totalCalls, 0);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+
+      {/* ── My Endpoints (wallet connected) ─────────────────────────────────── */}
+      {!wallet.state.connected ? (
+        <div style={{
+          padding: "20px 16px", borderRadius: 8,
+          background: "#080808", border: "1px solid #1a1a1a",
+          display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+        }}>
+          <div style={{ fontSize: 13, color: "#555" }}>Connect your wallet to see your published endpoints</div>
+          <button
+            onClick={wallet.connect}
+            style={{
+              padding: "10px 24px", fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 12, fontWeight: 700, borderRadius: 6, cursor: "pointer",
+              border: `1px solid ${selectedNetData.color}`,
+              background: `${selectedNetData.color}22`, color: selectedNetData.color,
+            }}
+          >
+            🔗 connect wallet
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {/* Header row */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#4ade80" }} />
+              <span style={{ fontSize: 11, color: "#666", fontFamily: "'JetBrains Mono', monospace" }}>
+                {wallet.state.address!.slice(0, 10)}…{wallet.state.address!.slice(-4)}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {myEndpoints.length > 0 && (
+                <span style={{ fontSize: 10, color: "#444" }}>
+                  {myEndpoints.length} endpoint{myEndpoints.length !== 1 ? "s" : ""}
+                </span>
+              )}
+              <button
+                onClick={() => wallet.state.address && fetchMyEndpoints(wallet.state.address)}
+                disabled={myEndpointsLoading}
+                style={{
+                  background: "none", border: "1px solid #222", color: "#444",
+                  cursor: myEndpointsLoading ? "default" : "pointer",
+                  fontSize: 12, padding: "3px 8px", borderRadius: 4,
+                  fontFamily: "'JetBrains Mono', monospace",
+                }}
+              >
+                {myEndpointsLoading ? "…" : "↺"}
+              </button>
+              <button
+                onClick={wallet.disconnect}
+                style={{
+                  background: "none", border: "none", color: "#333",
+                  cursor: "pointer", fontSize: 10, padding: "2px 6px",
+                }}
+              >
+                disconnect
+              </button>
+            </div>
+          </div>
+
+          {myEndpointsLoading && myEndpoints.length === 0 ? (
+            <div style={{ fontSize: 11, color: "#444", padding: "14px 0", textAlign: "center" }}>
+              fetching your endpoints…
+            </div>
+          ) : myEndpoints.length === 0 ? (
+            <div style={{
+              padding: "16px", borderRadius: 6, background: "#080808",
+              border: "1px solid #151515", fontSize: 11, color: "#444", textAlign: "center",
+            }}>
+              No endpoints published yet — use the ➕ Publish tab to register one
+            </div>
+          ) : (
+            <>
+              {/* Summary row */}
+              <div style={{
+                display: "flex", gap: 0,
+                background: "#080808", border: "1px solid #1a1a1a", borderRadius: 8, overflow: "hidden",
+              }}>
+                {[
+                  ["Total Calls",    totalCalls.toString()],
+                  ["Total Revenue",  `$${totalRevenue.toFixed(4)}`],
+                  ["Endpoints",      myEndpoints.length.toString()],
+                ].map(([label, value], i) => (
+                  <div key={label} style={{
+                    flex: 1, padding: "12px 14px",
+                    borderRight: i < 2 ? "1px solid #1a1a1a" : "none",
+                    display: "flex", flexDirection: "column", gap: 4,
+                  }}>
+                    <span style={{ fontSize: 9, color: "#444", textTransform: "uppercase", letterSpacing: "0.1em" }}>{label}</span>
+                    <span style={{ fontSize: 15, fontWeight: 700, color: "#e5e7eb", fontFamily: "'JetBrains Mono', monospace" }}>{value}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Endpoint cards */}
+              {myEndpoints.map((ep) => (
+                <div key={ep.id} style={{
+                  background: "#0a0a0a", border: "1px solid #1a1a1a", borderRadius: 8,
+                  padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10,
+                }}>
+                  {/* Top row: URL + status */}
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                    <span style={{
+                      width: 6, height: 6, borderRadius: "50%", marginTop: 5, flexShrink: 0,
+                      background: ep.active ? "#4ade80" : "#444",
+                    }} />
+                    <span style={{
+                      fontSize: 12, color: "#ccc", flex: 1,
+                      wordBreak: "break-all", lineHeight: 1.5,
+                    }}>
+                      {ep.url}
+                    </span>
+                    <button
+                      onClick={() => { setUrl(ep.url); setTimeout(() => handleLookup(), 50); }}
+                      style={{
+                        flexShrink: 0, padding: "3px 10px",
+                        fontFamily: "'JetBrains Mono', monospace", fontSize: 10,
+                        borderRadius: 4, cursor: "pointer",
+                        border: `1px solid ${selectedNetData.color}44`,
+                        background: `${selectedNetData.color}11`,
+                        color: selectedNetData.color,
+                      }}
+                    >
+                      manage →
+                    </button>
+                  </div>
+
+                  {/* Stats row */}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 20px" }}>
+                    {[
+                      ["price",    `$${ep.pricePerCall}/call`],
+                      ["calls",    ep.totalCalls.toString()],
+                      ["revenue",  `$${ep.totalRevenue}`],
+                      ["gas budget", ep.gasBudget > 0n ? `${formatNative(ep.gasBudget, 4)} HBAR` : "—"],
+                      ["gas share", ep.gasSharePct > 0 ? `${ep.gasSharePct}%` : "—"],
+                      ["since",    ep.registeredAt.toLocaleDateString()],
+                    ].map(([k, v]) => (
+                      <div key={k} style={{ display: "flex", gap: 5, alignItems: "baseline" }}>
+                        <span style={{ fontSize: 10, color: "#444" }}>{k}</span>
+                        <span style={{ fontSize: 11, color: "#777", fontFamily: "'JetBrains Mono', monospace" }}>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+
+      <div style={{ borderTop: "1px solid #111", margin: "0 -4px" }} />
 
       {/* ── Network ─────────────────────────────────────────────────────────── */}
       <Field label="Network">
@@ -311,22 +558,7 @@ export function ManageEndpoint({ networkId }: { networkId: NetworkId }) {
           {info.owner !== "0x0000000000000000000000000000000000000000" && (
             <div style={{ borderTop: "1px solid #1a1a1a", paddingTop: 16, display: "flex", flexDirection: "column", gap: 18 }}>
 
-              {!wallet.state.connected && (
-                <button
-                  onClick={wallet.connect}
-                  style={{
-                    padding: "10px 0", fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 12, fontWeight: 700, borderRadius: 6, cursor: "pointer",
-                    border: `1px solid ${selectedNetData.color}`,
-                    background: `${selectedNetData.color}22`,
-                    color: selectedNetData.color,
-                  }}
-                >
-                  🔗 connect wallet to manage
-                </button>
-              )}
-
-              {wallet.state.connected && !isOwner && (
+                  {wallet.state.connected && !isOwner && (
                 <div style={{
                   padding: "10px 14px", borderRadius: 6,
                   background: "#1a0a0a", border: "1px solid #3a1a1a",
