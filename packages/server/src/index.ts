@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
-import { HTTPFacilitatorClient } from "@x402/core/http";
 import { LocalFacilitatorClient } from "./services/localFacilitator";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import {
@@ -16,10 +15,7 @@ import {
   InMemoryAgentKitStorage,
 } from "@worldcoin/agentkit";
 
-import { config, WORLD_CHAIN, BASE, HEDERA, WORLD_USDC, HEDERA_MIRROR } from "./config";
-
-// Base Sepolia USDC address
-const BASE_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+import { config, HEDERA, HEDERA_MIRROR } from "./config";
 import weatherRouter from "./routes/weather";
 import pricesRouter from "./routes/prices";
 import publisherRouter from "./routes/publisher";
@@ -39,30 +35,6 @@ const hooks = createAgentkitHooks({
 // LocalFacilitatorClient: supports World Chain + Base without needing a live facilitator
 // (demo mode — simulates settlement for non-Base-Sepolia chains)
 const facilitatorClient = new LocalFacilitatorClient() as any;
-
-// Scheme for World Chain
-const worldEvmScheme = new ExactEvmScheme().registerMoneyParser(
-  async (amount: number, network: string) => {
-    if (network !== WORLD_CHAIN) return null;
-    return {
-      amount: String(Math.round(amount * 1e6)),
-      asset: WORLD_USDC,
-      extra: { name: "USD Coin", version: "2" },
-    };
-  }
-);
-
-// Scheme for Base
-const baseEvmScheme = new ExactEvmScheme().registerMoneyParser(
-  async (amount: number, network: string) => {
-    if (network !== BASE) return null;
-    return {
-      amount: String(Math.round(amount * 1e6)),
-      asset: BASE_USDC,
-      extra: { name: "USD Coin", version: "2" },
-    };
-  }
-);
 
 // Scheme for Hedera Testnet — native HBAR payments
 // Amount expressed in tinybars (1 HBAR = 10^8 tinybars)
@@ -90,8 +62,6 @@ const hederaEvmScheme = new ExactEvmScheme().registerMoneyParser(
 );
 
 const resourceServer = new x402ResourceServer(facilitatorClient)
-  .register(WORLD_CHAIN, worldEvmScheme)
-  .register(BASE, baseEvmScheme)
   .register(HEDERA, hederaEvmScheme)
   .registerExtension(agentkitResourceServerExtension);
 
@@ -104,17 +74,13 @@ const agentkitExt = declareAgentkitExtension({
 const routes = {
   "GET /api/weather/:city": {
     accepts: [
-      { scheme: "exact" as const, price: "$0.01",  network: WORLD_CHAIN, payTo },
-      { scheme: "exact" as const, price: "$0.01",  network: BASE,        payTo },
-      { scheme: "exact" as const, price: "$0.01",  network: HEDERA,      payTo },
+      { scheme: "exact" as const, price: "$0.01",  network: HEDERA, payTo },
     ],
     extensions: agentkitExt,
   },
   "GET /api/prices/:token": {
     accepts: [
-      { scheme: "exact" as const, price: "$0.005", network: WORLD_CHAIN, payTo },
-      { scheme: "exact" as const, price: "$0.005", network: BASE,        payTo },
-      { scheme: "exact" as const, price: "$0.005", network: HEDERA,      payTo },
+      { scheme: "exact" as const, price: "$0.005", network: HEDERA, payTo },
     ],
     extensions: agentkitExt,
   },
@@ -165,8 +131,8 @@ serve(
   (info) => {
     console.log(`\n🚀 AgentGate Server running on port ${info.port}`);
     console.log(`\n📡 Protected endpoints:`);
-    console.log(`   GET /api/weather/:city  — $0.01  USDC (World Chain / Base) | HBAR (Hedera)`);
-    console.log(`   GET /api/prices/:token  — $0.005 USDC (World Chain / Base) | HBAR (Hedera)`);
+    console.log(`   GET /api/weather/:city  — $0.01  HBAR (Hedera Testnet)`);
+    console.log(`   GET /api/prices/:token  — $0.005 HBAR (Hedera Testnet)`);
     console.log(`\n🔓 Public endpoints:`);
     console.log(`   GET /health`);
     console.log(`   POST /api/publisher/register`);

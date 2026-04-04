@@ -101,7 +101,7 @@ export function ManageEndpoint({ networkId }: { networkId: NetworkId }) {
   const net    = NETWORKS[networkId];
   const wallet = useWallet();
 
-  const [selectedNet, setSelectedNet] = useState<NetworkId>(networkId);
+  const [selectedNet] = useState<NetworkId>("hedera");
   const [url,         setUrl]         = useState("");
 
   // Look-up state
@@ -202,24 +202,18 @@ export function ManageEndpoint({ networkId }: { networkId: NetworkId }) {
 
       {/* ── Network ─────────────────────────────────────────────────────────── */}
       <Field label="Network">
-        <div style={{ display: "flex", gap: 8 }}>
-          {(["baseSepolia", "hedera"] as NetworkId[]).map((id) => {
-            const n      = NETWORKS[id];
-            const active = selectedNet === id;
-            return (
-              <button key={id} onClick={() => { setSelectedNet(id); setInfo(null); setLookError(null); }}
-                style={{
-                  flex: 1, padding: "8px 0", fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 11, cursor: "pointer", borderRadius: 6, transition: "all 0.2s",
-                  background: active ? `${n.color}15` : "transparent",
-                  border: `1px solid ${active ? n.color : "#222"}`,
-                  color: active ? n.color : "#444",
-                }}
-              >
-                {n.label}
-              </button>
-            );
-          })}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "9px 14px", borderRadius: 6,
+          background: `${selectedNetData.color}15`, border: `1px solid ${selectedNetData.color}`,
+        }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: selectedNetData.color, display: "inline-block", flexShrink: 0 }} />
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: selectedNetData.color, fontWeight: 700 }}>
+            {selectedNetData.label}
+          </span>
+          <span style={{ fontSize: 10, color: selectedNetData.color, opacity: 0.6, marginLeft: "auto" }}>
+            chain {selectedNetData.chainId}
+          </span>
         </div>
       </Field>
 

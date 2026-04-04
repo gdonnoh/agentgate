@@ -9,10 +9,10 @@ import { ManageEndpoint } from "./components/ManageEndpoint";
 
 type View = "dashboard" | "flow" | "publish" | "manage";
 
-const NETWORK_IDS: NetworkId[] = ["baseSepolia", "hedera"];
+const NETWORK_IDS: NetworkId[] = ["hedera"];
 
 export default function App() {
-  const [activeNet, setActiveNet] = useState<NetworkId>("baseSepolia");
+  const [activeNet, setActiveNet] = useState<NetworkId>("hedera");
   const [view, setView]           = useState<View>("dashboard");
   const { data, refetch }         = useOnChainData(activeNet);
   const net = NETWORKS[activeNet];
@@ -122,7 +122,7 @@ export default function App() {
 
       {/* ── Footer ───────────────────────────────────────────────────────── */}
       <footer className="footer">
-        <span>AgentGate · ERC-4337 Paymaster Infrastructure</span>
+        <span>AgentGate · AI Agent Payments on Hedera</span>
         <span>polls every 12s · {net.label} · chainId {net.chainId}</span>
       </footer>
 

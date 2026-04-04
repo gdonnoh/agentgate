@@ -75,7 +75,7 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
   const [price,         setPrice]         = useState("0.01");
   const [gasSharePct,   setGasSharePct]   = useState(100);    // 0–100%
   const [gasDeposit,    setGasDeposit]    = useState("0.005"); // ETH to deposit
-  const [selectedNet,   setSelectedNet]   = useState<NetworkId>(networkId);
+  const [selectedNet] = useState<NetworkId>("hedera");
 
   const [testing,       setTesting]       = useState(false);
   const [testResult,    setTestResult]    = useState<TestResult | null>(null);
@@ -230,24 +230,18 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
 
       {/* ── Network ─────────────────────────────────────────────────────────── */}
       <Field label="Target Network">
-        <div style={{ display: "flex", gap: 8 }}>
-          {(["baseSepolia", "hedera"] as NetworkId[]).map((id) => {
-            const n = NETWORKS[id];
-            const active = selectedNet === id;
-            return (
-              <button key={id} onClick={() => { setSelectedNet(id); setTestResult(null); }}
-                style={{
-                  flex: 1, padding: "8px 0", fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 11, cursor: "pointer", borderRadius: 6, transition: "all 0.2s",
-                  background: active ? `${n.color}15` : "transparent",
-                  border: `1px solid ${active ? n.color : "#222"}`,
-                  color: active ? n.color : "#444",
-                }}
-              >
-                {n.label}
-              </button>
-            );
-          })}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "9px 14px", borderRadius: 6,
+          background: `${net.color}15`, border: `1px solid ${net.color}`,
+        }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: net.color, display: "inline-block", flexShrink: 0 }} />
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: net.color, fontWeight: 700 }}>
+            {net.label}
+          </span>
+          <span style={{ fontSize: 10, color: net.color, opacity: 0.6, marginLeft: "auto" }}>
+            chain {net.chainId}
+          </span>
         </div>
       </Field>
 
@@ -493,7 +487,7 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
             <a href={NETWORKS[publishResult.networkId].explorerTx(publishResult.txHash)}
               target="_blank" rel="noreferrer"
               style={{ fontSize: 11, color: net.color }}>
-              view registration on {networkId === "hedera" ? "HashScan" : "Basescan"} ↗
+              view registration on HashScan ↗
             </a>
 
             {/* Deposit status */}
