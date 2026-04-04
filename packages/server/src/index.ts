@@ -97,42 +97,24 @@ const routes = {
   },
 };
 
-// ── WorldID gate middleware ────────────────────────────────────────────────────
-// Hard requirement: only agents delegated by a real human (World Chain AgentBook)
-// may access protected routes. Agents without WorldID get 403, not a payment fallback.
+// ── AgentKit enrichment middleware ─────────────────────────────────────────────
+// Optional: if an agentkit header is present, validate it and attach verification
+// status for downstream hooks (free-trial). Wallet-only agents (no agentkit) pass
+// through to x402 which issues a 402 challenge — they pay HBAR directly.
 //
 // Flow:
-//   no agentkit header + no payment attempt → let x402 issue the 402 challenge
-//     (the challenge includes the agentkit extension so the agent knows what's needed)
-//   no agentkit header + payment header present → 403 (paying without WorldID is rejected)
-//   agentkit header present but invalid/not in AgentBook → 403
-//   agentkit valid + in AgentBook → continue to x402 (free-trial or HBAR payment)
+//   no agentkit header → pass through to x402 (402 challenge includes agentkit info)
+//   agentkit header present but invalid → 403 (bad proof is rejected)
+//   agentkit valid but not in AgentBook → pass through (no free-trial, must pay)
+//   agentkit valid + in AgentBook → pass through (free-trial via x402 hooks)
 
-async function requireWorldId(c: any, next: () => Promise<void>) {
+async function enrichAgentKit(c: any, next: () => Promise<void>) {
   const agentkitHeader = c.req.header("agentkit") ?? c.req.header("AGENTKIT");
 
   if (!agentkitHeader) {
-    // Check whether the agent is already trying to pay (without providing WorldID proof)
-    const hasPayment =
-      c.req.header("x-payment") ??
-      c.req.header("X-PAYMENT") ??
-      c.req.header("payment-signature") ??
-      c.req.header("PAYMENT-SIGNATURE");
-
-    if (hasPayment) {
-      return c.json(
-        { error: "WorldID proof required. Include a valid `agentkit` header — HBAR payment alone is not accepted on this endpoint." },
-        403
-      );
-    }
-
-    // No agentkit and no payment → block immediately so the agent never pays before being verified.
-    // The agent must include a valid agentkit header on the FIRST request; if WorldID check passes,
-    // x402 will issue the 402 with payment details. This prevents paying-then-getting-403.
-    return c.json(
-      { error: "WorldID AgentKit proof required. Include a valid `agentkit` header with your first request. Register your agent at worldcoin.org." },
-      403
-    );
+    // No AgentKit proof — wallet-only agent. Let x402 issue the 402 challenge.
+    // The 402 response includes agentkitExt info so agents learn it's available.
+    return next();
   }
 
   try {
@@ -149,14 +131,11 @@ async function requireWorldId(c: any, next: () => Promise<void>) {
 
     const humanId = await agentBook.lookupHuman(verification.address, payload.chainId);
     if (!humanId) {
-      console.log(`[WorldID gate] ✗ ${verification.address} not in AgentBook → 403`);
-      return c.json(
-        { error: `Agent ${verification.address} is not registered in the World Chain AgentBook. Register your agent at worldcoin.org to access this endpoint.` },
-        403
-      );
+      console.log(`[AgentKit] ${verification.address} not in AgentBook — no free-trial, must pay`);
+    } else {
+      console.log(`[AgentKit] ✓ ${verification.address} verified (humanId: ${humanId.slice(0, 10)}…)`);
     }
 
-    console.log(`[WorldID gate] ✓ ${verification.address} verified (humanId: ${humanId.slice(0, 10)}…)`);
     return next();
   } catch (e: any) {
     return c.json({ error: `AgentKit verification error: ${e.message}` }, 403);
@@ -170,10 +149,9 @@ const app = new Hono();
 // so each endpoint can have its own dynamic price from the on-chain registry.
 app.route("/api/proxy", proxyRouter);
 
-// WorldID gate — applied to all protected routes before x402 sees the request
-// TODO?? rm
-app.use("/api/weather/*", requireWorldId);
-app.use("/api/prices/*",  requireWorldId);
+// AgentKit enrichment — optional; wallet-only agents pass through to x402
+app.use("/api/weather/*", enrichAgentKit);
+app.use("/api/prices/*",  enrichAgentKit);
 
 // Payment middleware (handles 402 challenge/response)
 const httpServer = new x402HTTPResourceServer(resourceServer, routes as any).onProtectedRequest(
@@ -186,7 +164,7 @@ app.get("/health", (c) => {
   return c.json({
     status: "ok",
     endpoints: 2,
-    agentkit: true,
+    agentkit: "optional",
     version: "1.0.0",
     protectedRoutes: Object.keys(routes),
   });
@@ -225,9 +203,9 @@ serve(
     console.log(`   GET  /health`);
     console.log(`   POST /api/publisher/proxy-config   — register proxy (wallet-signed)`);
     console.log(`   GET  /api/publisher/proxy-config/:id`);
-    console.log(`\n🆔 WorldID gate: REQUIRED on /api/weather + /api/prices (AgentBook, World Chain)`);
+    console.log(`\n🆔 AgentKit: OPTIONAL on /api/weather + /api/prices`);
     console.log(`   Verified agents → 3 free calls (free-trial), then HBAR payment`);
-    console.log(`   Unverified agents → 403 (HBAR payment alone not accepted)`);
+    console.log(`   Wallet-only agents → HBAR payment required (no free-trial)`);
     console.log(`💳 Payments to: ${payTo}\n`);
   }
 );

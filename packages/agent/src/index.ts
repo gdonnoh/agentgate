@@ -12,7 +12,7 @@
 
 import * as dotenv from "dotenv";
 import * as path from "path";
-import { createWalletClient, createPublicClient, http, type WalletClient, type PublicClient } from "viem";
+import { createWalletClient, createPublicClient, http, defineChain, type WalletClient, type PublicClient, type Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { worldchain, baseSepolia } from "viem/chains";
 import { decodePaymentRequiredHeader, encodePaymentSignatureHeader, x402HTTPClient } from "@x402/core/http";
@@ -25,7 +25,7 @@ dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
 // ── Config ────────────────────────────────────────────────────────────────────
 const SERVER_URL = process.env.SERVER_URL || "http://localhost:4021";
 const PRIVATE_KEY = process.env.AGENT_PRIVATE_KEY as `0x${string}` | undefined;
-const AGENT_ADDRESS = "0x05a7Ae061c14847e0B70f7851d76FC10289d69b0";
+const AGENT_ADDRESS = process.env.AGENT_ADDRESS;
 
 // ── Colors (simple ANSI, no chalk ESM issues) ─────────────────────────────────
 const c = {
@@ -52,6 +52,67 @@ const log = {
 
 function shortAddr(addr: string): string {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+}
+
+const HEDERA_RPC       = process.env.HEDERA_TESTNET_RPC || "https://testnet.hashio.io/api";
+// Hedera EVM: 1 ETH = 100 HBAR, 1 HBAR = 10^8 tinybars
+// → 10^18 wei = 10^10 tinybars → 1 tinybar = 10^8 wei
+const WEI_PER_TINYBAR  = 100_000_000n; // 10^8
+const HEDERA_GAS_PRICE = 1_200_000_000_000n; // 1200 Gwei — Hedera testnet minimum
+
+const hederaTestnet = defineChain({
+  id: 296,
+  name: "Hedera Testnet",
+  nativeCurrency: { name: "HBAR", symbol: "HBAR", decimals: 18 },
+  rpcUrls: { default: { http: [HEDERA_RPC] } },
+});
+
+/**
+ * Send native HBAR payment and return the encoded PAYMENT-SIGNATURE header.
+ * Uses the same flow as pay-hedera.ts: send tx → wait receipt → build x402 payload.
+ */
+async function payHbar(
+  account: ReturnType<typeof privateKeyToAccount>,
+  accepts: any
+): Promise<{ header: string; displayAmount: string }> {
+  const tinybars = BigInt(accepts.amount);
+  const hbarAmount = Number(tinybars) / 1e8;
+  const weiValue = tinybars * WEI_PER_TINYBAR;
+
+  const walletClient = createWalletClient({ account, chain: hederaTestnet, transport: http(HEDERA_RPC) });
+  const publicClient = createPublicClient({ chain: hederaTestnet, transport: http(HEDERA_RPC) });
+
+  log.info(`   Sending ${hbarAmount.toFixed(6)} HBAR to ${shortAddr(accepts.payTo)}...`);
+  const txHash = await walletClient.sendTransaction({
+    to: accepts.payTo as Address,
+    value: weiValue,
+    gas: 3_000_000n,
+    gasPrice: HEDERA_GAS_PRICE,
+  });
+  log.dim(`   Tx: ${txHash}`);
+
+  log.info(`   Waiting for confirmation (~3s)...`);
+  const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  log.dim(`   Receipt: status=${receipt.status}, gasUsed=${receipt.gasUsed}, blockNumber=${receipt.blockNumber}`);
+  if (receipt.status !== "success") throw new Error(`HBAR tx reverted (status=${receipt.status}, gasUsed=${receipt.gasUsed}): ${txHash}`);
+  log.success(`   Confirmed in block ${receipt.blockNumber}`);
+
+  const paymentPayload = {
+    x402Version: 1,
+    scheme: "exact",
+    network: "eip155:296",
+    accepted: { scheme: "exact", network: "eip155:296" },
+    payload: {
+      transaction: txHash,
+      from: account.address,
+      to: accepts.payTo,
+      amount: tinybars.toString(),
+      asset: "hbar",
+    },
+  };
+
+  const header = Buffer.from(JSON.stringify(paymentPayload)).toString("base64");
+  return { header, displayAmount: `${hbarAmount.toFixed(6)} HBAR` };
 }
 
 /**
@@ -106,16 +167,19 @@ async function buildAgentkitHeader(
 
 /**
  * Make a payment-aware fetch call.
- * - First attempt: send agentkit header only (free-trial)
- * - If still 402: build x402 payment-signature and retry with both
+ * - With AgentKit: send agentkit header first (free-trial), then payment if needed
+ * - Without AgentKit (wallet-only): skip SIWE, go straight to payment
  */
 async function agentFetch(
   url: string,
   account: ReturnType<typeof privateKeyToAccount> | null,
-  walletSigner: any | null
+  walletSigner: any | null,
+  options?: { skipAgentKit?: boolean }
 ): Promise<{ response: Response; usedFreeTrial: boolean; paidUSDC: boolean; paymentAmount?: string }> {
+  const walletOnly = options?.skipAgentKit ?? false;
+
   // ── Step 1: Initial request ────────────────────────────────────────────────
-  log.info(`\nStep 1: GET ${url}`);
+  log.info(`\nStep 1: GET ${url}${walletOnly ? " (wallet-only mode)" : ""}`);
   const res1 = await fetch(url);
   log.dim(`   → HTTP ${res1.status}`);
 
@@ -141,14 +205,50 @@ async function agentFetch(
   log.dim(`   Price:   ${displayAmount}`);
   log.dim(`   Network: ${chosen.network}`);
   log.dim(`   Asset:   ${chosen.asset}`);
-  log.dim(`   AgentKit challenge: nonce=${(paymentRequired.extensions as any)?.agentkit?.info?.nonce?.slice(0, 8)}...`);
 
-  // ── Step 3: Sign AgentKit SIWE challenge ──────────────────────────────────
   if (!account) {
-    log.warn("\nNo AGENT_PRIVATE_KEY set — cannot sign AgentKit challenge");
+    log.warn("\nNo AGENT_PRIVATE_KEY set — cannot sign");
     log.warn("Set AGENT_PRIVATE_KEY in .env to enable signing");
     return { response: res1, usedFreeTrial: false, paidUSDC: false };
   }
+
+  // ── Wallet-only path: skip AgentKit, go straight to payment ───────────────
+  if (walletOnly) {
+    log.info(`\nStep 3: Skipping AgentKit (wallet-only) — building payment...`);
+
+    try {
+      if (isHbar) {
+        const { header, displayAmount: payAmt } = await payHbar(account, chosen);
+        log.info(`\nStep 4: Retry with HBAR payment only...`);
+        const res2 = await fetch(url, { headers: { "PAYMENT-SIGNATURE": header } });
+        log.dim(`   → HTTP ${res2.status}`);
+        return { response: res2, usedFreeTrial: false, paidUSDC: res2.status === 200, paymentAmount: payAmt };
+      }
+
+      // Non-HBAR: use x402 EVM scheme
+      if (!walletSigner) {
+        log.error("   Cannot sign payment: no wallet signer available");
+        return { response: res1, usedFreeTrial: false, paidUSDC: false };
+      }
+      const evmScheme = new ExactEvmScheme(walletSigner);
+      const coreClient = new x402Client().register("eip155:*", evmScheme);
+      const httpClient = new x402HTTPClient(coreClient);
+      const paymentPayload = await coreClient.createPaymentPayload(paymentRequired as any);
+      const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
+
+      log.info(`\nStep 4: Retry with payment only...`);
+      const res2 = await fetch(url, { headers: paymentHeaders });
+      log.dim(`   → HTTP ${res2.status}`);
+      const paymentAmount = `${Number((paymentRequired.accepts as any[])[0].amount) / 1e6} USDC`;
+      return { response: res2, usedFreeTrial: false, paidUSDC: res2.status === 200, paymentAmount };
+    } catch (err: any) {
+      log.error(`   Payment failed: ${err.message}`);
+      return { response: res1, usedFreeTrial: false, paidUSDC: false };
+    }
+  }
+
+  // ── AgentKit path: sign SIWE, try free-trial, then payment if needed ──────
+  log.dim(`   AgentKit challenge: nonce=${(paymentRequired.extensions as any)?.agentkit?.info?.nonce?.slice(0, 8)}...`);
 
   log.info(`\nStep 3: Signing AgentKit SIWE challenge...`);
   const agentkitHeader = await buildAgentkitHeader(paymentRequired, account);
@@ -163,55 +263,55 @@ async function agentFetch(
   log.dim(`   → HTTP ${res2.status}`);
 
   if (res2.status === 200) {
-    log.success(`   ✅ Free-trial granted — no USDC payment needed`);
+    log.success(`   ✅ Free-trial granted — no payment needed`);
     return { response: res2, usedFreeTrial: true, paidUSDC: false };
   }
 
   // ── Step 5: Free-trial exhausted — build x402 payment ────────────────────
   if (res2.status === 402) {
-    log.warn(`\nStep 5: Free-trial exhausted — building USDC payment...`);
-
-    if (!walletSigner) {
-      log.error("   Cannot sign payment: no wallet signer available");
-      return { response: res2, usedFreeTrial: false, paidUSDC: false };
-    }
+    log.warn(`\nStep 5: Free-trial exhausted — building payment...`);
 
     // Parse fresh 402 from res2
     const payReqHeader2 = res2.headers.get("payment-required");
     if (!payReqHeader2) throw new Error("No payment-required header in second 402");
     const payReq2 = decodePaymentRequiredHeader(payReqHeader2);
+    const chosen2 = (payReq2.accepts as any[])[0];
+    const isHbar2 = chosen2.asset === "hbar" || chosen2.network === "eip155:296";
 
     try {
-      // Build x402 client
-      const evmScheme = new ExactEvmScheme(walletSigner);
-      const coreClient = new x402Client().register("eip155:*", evmScheme);
-      const httpClient = new x402HTTPClient(coreClient);
-
-      // Create payment payload
-      const paymentPayload = await coreClient.createPaymentPayload(2, (payReq2.accepts as any[])[0]);
-      const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
-
-      log.info(`   ✍️  USDC payment signed`);
-
-      // Retry with both agentkit + payment-signature headers
-      log.info(`\nStep 6: Retry with AgentKit proof + USDC payment...`);
-
       // Re-sign agentkit (fresh nonce from new 402)
       const agentkitHeader2 = await buildAgentkitHeader(payReq2, account);
 
+      if (isHbar2) {
+        const { header, displayAmount: payAmt } = await payHbar(account, chosen2);
+        log.info(`\nStep 6: Retry with AgentKit proof + HBAR payment...`);
+        const res3 = await fetch(url, {
+          headers: { "PAYMENT-SIGNATURE": header, agentkit: agentkitHeader2 },
+        });
+        log.dim(`   → HTTP ${res3.status}`);
+        return { response: res3, usedFreeTrial: false, paidUSDC: res3.status === 200, paymentAmount: payAmt };
+      }
+
+      // Non-HBAR: use x402 EVM scheme
+      if (!walletSigner) {
+        log.error("   Cannot sign payment: no wallet signer available");
+        return { response: res2, usedFreeTrial: false, paidUSDC: false };
+      }
+      const evmScheme = new ExactEvmScheme(walletSigner);
+      const coreClient = new x402Client().register("eip155:*", evmScheme);
+      const httpClient = new x402HTTPClient(coreClient);
+      const paymentPayload = await coreClient.createPaymentPayload(payReq2 as any);
+      const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
+
+      log.info(`\nStep 6: Retry with AgentKit proof + payment...`);
       const res3 = await fetch(url, {
-        headers: {
-          ...paymentHeaders,
-          agentkit: agentkitHeader2,
-        },
+        headers: { ...paymentHeaders, agentkit: agentkitHeader2 },
       });
       log.dim(`   → HTTP ${res3.status}`);
-
-      const paymentAmount = `${Number((payReq2.accepts as any[])[0].amount) / 1e6} USDC`;
+      const paymentAmount = `${Number(chosen2.amount) / 1e6} USDC`;
       return { response: res3, usedFreeTrial: false, paidUSDC: res3.status === 200, paymentAmount };
     } catch (err: any) {
-      log.error(`   Payment signing failed: ${err.message}`);
-      log.warn(`   (This is expected without USDC balance on testnet)`);
+      log.error(`   Payment failed: ${err.message}`);
       return { response: res2, usedFreeTrial: false, paidUSDC: false };
     }
   }
@@ -266,9 +366,9 @@ async function main() {
     data?: any;
   }> = [];
 
-  // ── Call 1: Weather ───────────────────────────────────────────────────────
+  // ── Call 1: Weather (with AgentKit) ────────────────────────────────────────
   log.sep();
-  log.header("📡 Call 1: Weather API (/api/weather/cannes)");
+  log.header("📡 Call 1: Weather API — AgentKit mode (/api/weather/cannes)");
   try {
     const { response, usedFreeTrial, paidUSDC, paymentAmount } = await agentFetch(
       `${SERVER_URL}/api/weather/cannes`,
@@ -289,9 +389,9 @@ async function main() {
     results.push({ endpoint: "/api/weather/cannes", status: 0, usedFreeTrial: false, paidUSDC: false });
   }
 
-  // ── Call 2: Price Feed ────────────────────────────────────────────────────
+  // ── Call 2: Price Feed (with AgentKit) ────────────────────────────────────
   log.sep();
-  log.header("📡 Call 2: Price Feed API (/api/prices/eth)");
+  log.header("📡 Call 2: Price Feed API — AgentKit mode (/api/prices/eth)");
   try {
     const { response, usedFreeTrial, paidUSDC, paymentAmount } = await agentFetch(
       `${SERVER_URL}/api/prices/eth`,
@@ -310,6 +410,30 @@ async function main() {
   } catch (err: any) {
     log.error(`Error: ${err.message}`);
     results.push({ endpoint: "/api/prices/eth", status: 0, usedFreeTrial: false, paidUSDC: false });
+  }
+
+  // ── Call 3: Weather (wallet-only, no AgentKit) ────────────────────────────
+  log.sep();
+  log.header("📡 Call 3: Weather API — Wallet-only mode (/api/weather/paris)");
+  try {
+    const { response, usedFreeTrial, paidUSDC, paymentAmount } = await agentFetch(
+      `${SERVER_URL}/api/weather/paris`,
+      account,
+      walletSigner,
+      { skipAgentKit: true }
+    );
+
+    let data: any = null;
+    if (response.status === 200) {
+      data = await response.json();
+      log.success(`\n✅ Weather data received (wallet-only)!`);
+      console.log(`\n${c.gray}${JSON.stringify(data, null, 2)}${c.reset}`);
+    }
+
+    results.push({ endpoint: "/api/weather/paris (wallet-only)", status: response.status, usedFreeTrial, paidUSDC, paymentAmount, data });
+  } catch (err: any) {
+    log.error(`Error: ${err.message}`);
+    results.push({ endpoint: "/api/weather/paris (wallet-only)", status: 0, usedFreeTrial: false, paidUSDC: false });
   }
 
   // ── Summary ───────────────────────────────────────────────────────────────

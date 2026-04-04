@@ -55,7 +55,7 @@ npx hardhat run scripts/fund-paymaster.ts --network hedera
 The middleware chain in `packages/server/src/index.ts` is order-sensitive:
 
 1. **Proxy routes** (`/api/proxy/*`) — mounted BEFORE x402, handles 402 internally with dynamic per-endpoint pricing from on-chain registry
-2. **WorldID gate** (`/api/weather/*`, `/api/prices/*`) — requires `agentkit` header, validates SIWE signature and humanId via AgentBook
+2. **AgentKit enrichment** (`/api/weather/*`, `/api/prices/*`) — optionally validates `agentkit` header; wallet-only agents pass through to x402
 3. **x402 payment middleware** — issues HTTP 402 challenges with price/network/AgentKit info; verifies payment signatures on retry
 4. **Protected routes** — `GET /api/weather/:city` ($0.01), `GET /api/prices/:token` ($0.005)
 5. **Publisher management** (`/api/publisher/*`) — unprotected endpoint registration and proxy config CRUD
@@ -72,9 +72,9 @@ Routes are in `packages/server/src/routes/` (weather, prices, proxy, publisher).
 
 ## Key Architectural Details
 
-- **x402 protocol**: Server returns HTTP 402 with base64-encoded `payment-required` header containing price, network, and AgentKit challenge. Agent signs SIWE + payment, retries with `agentkit` and `payment-signature` headers. Route-level config specifies exact price scheme (e.g., $0.01 for weather, $0.005 for prices).
+- **x402 protocol**: Server returns HTTP 402 with base64-encoded `payment-required` header containing price, network, and AgentKit challenge info. Agents can retry with `payment-signature` header only (wallet-only) or with both `agentkit` + `payment-signature` headers. Route-level config specifies exact price scheme (e.g., $0.01 for weather, $0.005 for prices).
 - **Hedera HBAR payments**: Prices are in USD, converted to tinybars at runtime using Mirror Node exchange rate API (`/api/v1/network/exchangerate`). 1 HBAR = 10^8 tinybars. Hedera EVM: 1 ETH (wei) = 100 HBAR = 10^18 tinybars. Mirror Node polling at `/api/v1/contracts/results/{txHash}` confirms payment with ~3s finality.
-- **AgentKit free trial**: WorldCoin AgentKit gives WorldID-verified agents 3 free API calls via `InMemoryAgentKitStorage` (resets on server restart — demo only, not persisted).
+- **AgentKit (optional)**: WorldCoin AgentKit gives WorldID-verified agents 3 free API calls via `InMemoryAgentKitStorage` (resets on server restart — demo only, not persisted). Wallet-only agents (no AgentKit) can access all endpoints by paying HBAR directly — they get no free-trial and no account abstraction gas subsidies.
 - **Paymaster gas share**: Publishers deposit ETH and set a `gasShareBps` (0–10000). The paymaster covers that % of agent gas costs per call. `paymasterAndData[52:84]` carries the `endpointHash = keccak256(url)`. Post-op refunds over-reserved balance.
 - **Config**: All packages load `.env` from the repo root (see `.env.example`). Server config is in `packages/server/src/config.ts`. Contract addresses and deployment info are hardcoded in `packages/dashboard/src/lib/chains.ts`. Contract ABIs are manually defined in `packages/dashboard/src/lib/abi.ts` (not auto-generated).
 - **Network**: The project targets Hedera Testnet (chainId 296, RPC `https://testnet.hashio.io/api`, Mirror Node `https://testnet.mirrornode.hedera.com`). Base Sepolia config exists but is not actively used.
