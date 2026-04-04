@@ -1,5 +1,6 @@
-import { useState, useRef } from "react";
-import { NetworkId, NETWORKS, DEPLOYMENTS } from "../lib/chains";
+import { useState, useRef, useEffect } from "react";
+import { createPublicClient, http } from "viem";
+import { NetworkId, NETWORKS, DEPLOYMENTS, hederaTestnet } from "../lib/chains";
 import { useWallet } from "../hooks/useWallet";
 
 const REGISTRY_ABI = [
@@ -77,6 +78,10 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
   const [gasDeposit,    setGasDeposit]    = useState("0.005"); // ETH to deposit
   const [selectedNet] = useState<NetworkId>("hedera");
 
+  // Live gas price from Hedera RPC (wei). Used to estimate sponsored calls.
+  // A typical Hedera EVM call uses ~50,000–80,000 gas; we use 65,000 as the midpoint.
+  const [gasPrice,      setGasPrice]      = useState<bigint>(1_200_000_000_000n); // 1200 Gwei fallback
+
   const [testing,       setTesting]       = useState(false);
   const [testResult,    setTestResult]    = useState<TestResult | null>(null);
   const [publishing,    setPublishing]    = useState(false);
@@ -87,6 +92,12 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
   const [depositDone,   setDepositDone]   = useState(false);
 
   const urlRef = useRef<HTMLInputElement>(null);
+
+  // Fetch live gas price from Hedera JSON-RPC relay on mount
+  useEffect(() => {
+    const client = createPublicClient({ chain: hederaTestnet, transport: http(NETWORKS["hedera"].rpc) });
+    client.getGasPrice().then((gp) => setGasPrice(gp)).catch(() => { /* keep fallback */ });
+  }, []);
 
   const paymasterAddress = DEPLOYMENTS[selectedNet].paymaster;
 
@@ -223,7 +234,17 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
   const canPublish   = testResult?.ok && !publishing && !publishResult;
   const hasDeposit   = parseFloat(gasDeposit) > 0;
   const depositPending = publishResult && hasDeposit && !depositDone && !depositError;
-  const estCalls     = parseFloat(gasDeposit) > 0 ? Math.floor(parseFloat(gasDeposit) / 0.000054) : 0;
+
+  // Real estimate: deposit (wei) / cost-per-call (wei)
+  // cost-per-call = gasPrice × ~65,000 gas (typical EVM contract call on Hedera)
+  const GAS_PER_CALL  = 65_000n;
+  const costPerCallWei = gasPrice * GAS_PER_CALL;
+  const depositWei     = parseFloat(gasDeposit) > 0
+    ? BigInt(Math.round(parseFloat(gasDeposit) * 1e18))
+    : 0n;
+  const estCalls       = costPerCallWei > 0n && depositWei > 0n
+    ? Number(depositWei / costPerCallWei)
+    : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
@@ -500,7 +521,7 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
               }}>
                 {depositDone ? (
                   <div style={{ fontSize: 12, fontWeight: 700, color: "#4ade80" }}>
-                    ✅ Gas budget deposited — {gasDeposit} {net.currency} ({gasSharePct}% share per call, ~{Math.floor(parseFloat(gasDeposit) / 0.000054).toLocaleString()} sponsored calls)
+                    ✅ Gas budget deposited — {gasDeposit} {net.currency} ({gasSharePct}% share per call, ~{estCalls.toLocaleString()} sponsored calls)
                   </div>
                 ) : depositError ? (
                   <>
