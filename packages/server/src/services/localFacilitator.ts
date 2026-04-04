@@ -11,18 +11,27 @@
  */
 
 import { HTTPFacilitatorClient } from "@x402/core/http";
+import { HederaFacilitatorClient } from "./hederaFacilitator";
 
-const WORLD_CHAIN = "eip155:480";
+const WORLD_CHAIN  = "eip155:480";
 const BASE_MAINNET = "eip155:8453";
 const BASE_SEPOLIA = "eip155:84532";
+const HEDERA       = "eip155:296";
 
 const SUPPORTED_KINDS = {
   kinds: [
     { x402Version: 2, scheme: "exact", network: WORLD_CHAIN },
     { x402Version: 2, scheme: "exact", network: BASE_MAINNET },
     { x402Version: 2, scheme: "exact", network: BASE_SEPOLIA },
+    // Hedera: register under both v1 and v2.
+    // v1 matching only checks scheme+network (not deepEqual of full requirements),
+    // which avoids rate-drift issues between the 402 and the retry.
+    { x402Version: 1, scheme: "exact", network: HEDERA },
+    { x402Version: 2, scheme: "exact", network: HEDERA },
   ],
 };
+
+const hederaFacilitator = new HederaFacilitatorClient();
 
 const REAL_FACILITATOR_URL = "https://www.x402.org/facilitator";
 
@@ -41,11 +50,17 @@ export class LocalFacilitatorClient {
   }
 
   /**
-   * Verify payment — delegate to real facilitator for Base Sepolia,
-   * simulate success for other chains (demo mode).
+   * Verify payment:
+   *   - Hedera (eip155:296): real verification via Mirror Node
+   *   - Base Sepolia: delegates to x402.org real facilitator
+   *   - Others: demo mode (accepts all)
    */
   async verify(paymentPayload: any, paymentRequirements: any): Promise<any> {
     const network = paymentRequirements?.network || "";
+
+    if (network === HEDERA) {
+      return hederaFacilitator.verify(paymentPayload, paymentRequirements);
+    }
 
     if (network === BASE_SEPOLIA) {
       try {
@@ -64,11 +79,17 @@ export class LocalFacilitatorClient {
   }
 
   /**
-   * Settle payment — delegate to real facilitator for Base Sepolia,
-   * simulate success for other chains.
+   * Settle payment:
+   *   - Hedera (eip155:296): instant finality, no broadcast needed
+   *   - Base Sepolia: delegates to x402.org real facilitator
+   *   - Others: demo mode
    */
   async settle(paymentPayload: any, paymentRequirements: any): Promise<any> {
     const network = paymentRequirements?.network || "";
+
+    if (network === HEDERA) {
+      return hederaFacilitator.settle(paymentPayload, paymentRequirements);
+    }
 
     if (network === BASE_SEPOLIA) {
       try {

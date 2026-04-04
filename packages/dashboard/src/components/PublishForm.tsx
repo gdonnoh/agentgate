@@ -83,6 +83,8 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
   const [publishStep,   setPublishStep]   = useState("");
   const [publishResult, setPublishResult] = useState<PublishResult | null>(null);
   const [publishError,  setPublishError]  = useState<string | null>(null);
+  const [depositError,  setDepositError]  = useState<string | null>(null);
+  const [depositDone,   setDepositDone]   = useState(false);
 
   const urlRef = useRef<HTMLInputElement>(null);
 
@@ -141,6 +143,8 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
     setPublishing(true);
     setPublishError(null);
     setPublishResult(null);
+    setDepositError(null);
+    setDepositDone(false);
     setPublishStep("");
 
     try {
@@ -154,6 +158,8 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
         "registerEndpoint",
         [url.trim(), priceUnits, paymasterAddress]
       );
+
+      setPublishResult({ txHash: regHash, networkId: selectedNet });
 
       // Step 2: Fund your gas budget on the Paymaster
       if (parseFloat(gasDeposit) > 0) {
@@ -169,16 +175,44 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
             [url.trim(), bps],
             depositWei
           );
+          setDepositDone(true);
         } catch (fundErr: any) {
-          // Log but don't fail — registry registration is the primary step
-          console.warn("Paymaster fund failed:", fundErr.message);
+          setDepositError(fundErr.shortMessage || fundErr.message || String(fundErr));
         }
       }
 
       setPublishStep("");
-      setPublishResult({ txHash: regHash, networkId: selectedNet });
     } catch (e: any) {
-      setPublishError(e.shortMessage || e.message);
+      const msg = e.shortMessage || e.message || String(e);
+      setPublishError(msg);
+    } finally {
+      setPublishing(false);
+      setPublishStep("");
+    }
+  }
+
+  async function handleRetryDeposit() {
+    if (!wallet.state.connected) { await wallet.connect(); return; }
+    if (wallet.state.chainId !== NETWORKS[selectedNet].chainId) {
+      await wallet.switchNetwork(selectedNet); return;
+    }
+    setPublishing(true);
+    setDepositError(null);
+    setPublishStep("Depositing gas budget…");
+    try {
+      const depositWei = BigInt(Math.round(parseFloat(gasDeposit) * 1e18));
+      const bps        = Math.round(gasSharePct * 100);
+      await wallet.writeContract(
+        selectedNet,
+        paymasterAddress,
+        PAYMASTER_ABI as any,
+        "fundAndSetGasShare",
+        [url.trim(), bps],
+        depositWei
+      );
+      setDepositDone(true);
+    } catch (e: any) {
+      setDepositError(e.shortMessage || e.message || String(e));
     } finally {
       setPublishing(false);
       setPublishStep("");
@@ -187,6 +221,8 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
 
   const wrongNetwork = wallet.state.connected && wallet.state.chainId !== NETWORKS[selectedNet].chainId;
   const canPublish   = testResult?.ok && !publishing && !publishResult;
+  const hasDeposit   = parseFloat(gasDeposit) > 0;
+  const depositPending = publishResult && hasDeposit && !depositDone && !depositError;
   const estCalls     = parseFloat(gasDeposit) > 0 ? Math.floor(parseFloat(gasDeposit) / 0.000054) : 0;
 
   return (
@@ -435,19 +471,18 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
           <div style={{
             padding: "14px 16px", borderRadius: 8,
             background: "#0a1a0a", border: "1px solid #1a3a1a",
-            display: "flex", flexDirection: "column", gap: 8,
+            display: "flex", flexDirection: "column", gap: 10,
           }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#4ade80" }}>
-              ✅ Endpoint published on-chain
+              ✅ Endpoint registered on-chain
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {[
                 ["Network",   NETWORKS[publishResult.networkId].label],
                 ["URL",       url],
                 ["Price",     "$" + price + " USDC"],
-                ["Gas share", `${gasSharePct}% (${parseFloat(gasDeposit) > 0 ? gasDeposit + " " + net.currency + " deposited" : "no deposit"})`],
                 ["Paymaster", paymasterAddress.slice(0, 14) + "…"],
-                ["Tx hash",   publishResult.txHash],
+                ["Reg tx",    publishResult.txHash],
               ].map(([k, v]) => (
                 <div key={k} style={{ display: "flex", gap: 8 }}>
                   <span style={{ fontSize: 10, color: "#555", width: 70, flexShrink: 0 }}>{k}</span>
@@ -457,9 +492,53 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
             </div>
             <a href={NETWORKS[publishResult.networkId].explorerTx(publishResult.txHash)}
               target="_blank" rel="noreferrer"
-              style={{ fontSize: 11, color: net.color, marginTop: 2 }}>
-              view on {networkId === "hedera" ? "HashScan" : "Basescan"} ↗
+              style={{ fontSize: 11, color: net.color }}>
+              view registration on {networkId === "hedera" ? "HashScan" : "Basescan"} ↗
             </a>
+
+            {/* Deposit status */}
+            {hasDeposit && (
+              <div style={{
+                marginTop: 4, padding: "10px 12px", borderRadius: 6,
+                background: depositDone ? "#081a08" : depositError ? "#1a0808" : "#0d0d0d",
+                border: `1px solid ${depositDone ? "#1a3a1a" : depositError ? "#3a1a1a" : "#1e1e1e"}`,
+                display: "flex", flexDirection: "column", gap: 6,
+              }}>
+                {depositDone ? (
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#4ade80" }}>
+                    ✅ Gas budget deposited — {gasDeposit} {net.currency} ({gasSharePct}% share per call, ~{Math.floor(parseFloat(gasDeposit) / 0.000054).toLocaleString()} sponsored calls)
+                  </div>
+                ) : depositError ? (
+                  <>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#f87171" }}>
+                      ❌ Deposit failed
+                    </div>
+                    <div style={{ fontSize: 11, color: "#f87171", wordBreak: "break-all" }}>
+                      {depositError}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#666", marginTop: 2 }}>
+                      Your endpoint is registered but has no gas budget yet. Make sure your wallet has enough {net.currency} (need {gasDeposit} {net.currency} + gas).
+                    </div>
+                    <button
+                      onClick={handleRetryDeposit}
+                      disabled={publishing}
+                      style={{
+                        marginTop: 4, padding: "8px 0",
+                        fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700,
+                        borderRadius: 6, cursor: publishing ? "default" : "pointer",
+                        border: `1px solid ${net.color}`, background: `${net.color}22`, color: net.color,
+                      }}
+                    >
+                      {publishing ? publishStep || "sending…" : `retry deposit ${gasDeposit} ${net.currency} →`}
+                    </button>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 11, color: "#666" }}>
+                    ⏳ Depositing {gasDeposit} {net.currency} gas budget…
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -16,7 +16,7 @@ import {
   InMemoryAgentKitStorage,
 } from "@worldcoin/agentkit";
 
-import { config, WORLD_CHAIN, BASE, WORLD_USDC } from "./config";
+import { config, WORLD_CHAIN, BASE, HEDERA, WORLD_USDC, HEDERA_MIRROR } from "./config";
 
 // Base Sepolia USDC address
 const BASE_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
@@ -64,9 +64,35 @@ const baseEvmScheme = new ExactEvmScheme().registerMoneyParser(
   }
 );
 
+// Scheme for Hedera Testnet — native HBAR payments
+// Amount expressed in tinybars (1 HBAR = 10^8 tinybars)
+// Price fetched live from Mirror Node exchange rate API
+const hederaEvmScheme = new ExactEvmScheme().registerMoneyParser(
+  async (amount: number, network: string) => {
+    if (network !== HEDERA) return null;
+    let hbarPerUsd = 11.43; // fallback: ~$0.0875/HBAR → ~11.43 HBAR/$1
+    try {
+      const rateRes = await fetch(`${HEDERA_MIRROR}/api/v1/network/exchangerate`);
+      const rateData = await rateRes.json();
+      const { cent_equivalent, hbar_equivalent } = rateData.current_rate;
+      const usdPerHbar = cent_equivalent / 100 / hbar_equivalent;
+      hbarPerUsd = 1 / usdPerHbar;
+    } catch {
+      // use fallback
+    }
+    const tinybars = Math.ceil(amount * hbarPerUsd * 1e8); // USD → HBAR → tinybars
+    return {
+      amount: String(tinybars),
+      asset: "hbar",
+      extra: { name: "HBAR", decimals: 8, assetTransferMethod: "hedera-native" },
+    };
+  }
+);
+
 const resourceServer = new x402ResourceServer(facilitatorClient)
   .register(WORLD_CHAIN, worldEvmScheme)
   .register(BASE, baseEvmScheme)
+  .register(HEDERA, hederaEvmScheme)
   .registerExtension(agentkitResourceServerExtension);
 
 // ── Protected route definitions ───────────────────────────────────────────────
@@ -78,35 +104,17 @@ const agentkitExt = declareAgentkitExtension({
 const routes = {
   "GET /api/weather/:city": {
     accepts: [
-      {
-        scheme: "exact" as const,
-        price: "$0.01",
-        network: WORLD_CHAIN,
-        payTo,
-      },
-      {
-        scheme: "exact" as const,
-        price: "$0.01",
-        network: BASE,
-        payTo,
-      },
+      { scheme: "exact" as const, price: "$0.01",  network: WORLD_CHAIN, payTo },
+      { scheme: "exact" as const, price: "$0.01",  network: BASE,        payTo },
+      { scheme: "exact" as const, price: "$0.01",  network: HEDERA,      payTo },
     ],
     extensions: agentkitExt,
   },
   "GET /api/prices/:token": {
     accepts: [
-      {
-        scheme: "exact" as const,
-        price: "$0.005",
-        network: WORLD_CHAIN,
-        payTo,
-      },
-      {
-        scheme: "exact" as const,
-        price: "$0.005",
-        network: BASE,
-        payTo,
-      },
+      { scheme: "exact" as const, price: "$0.005", network: WORLD_CHAIN, payTo },
+      { scheme: "exact" as const, price: "$0.005", network: BASE,        payTo },
+      { scheme: "exact" as const, price: "$0.005", network: HEDERA,      payTo },
     ],
     extensions: agentkitExt,
   },
@@ -157,8 +165,8 @@ serve(
   (info) => {
     console.log(`\n🚀 AgentGate Server running on port ${info.port}`);
     console.log(`\n📡 Protected endpoints:`);
-    console.log(`   GET /api/weather/:city  — $0.01 USDC (World Chain / Base)`);
-    console.log(`   GET /api/prices/:token  — $0.005 USDC (World Chain / Base)`);
+    console.log(`   GET /api/weather/:city  — $0.01  USDC (World Chain / Base) | HBAR (Hedera)`);
+    console.log(`   GET /api/prices/:token  — $0.005 USDC (World Chain / Base) | HBAR (Hedera)`);
     console.log(`\n🔓 Public endpoints:`);
     console.log(`   GET /health`);
     console.log(`   POST /api/publisher/register`);
