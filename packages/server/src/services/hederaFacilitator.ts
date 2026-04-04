@@ -36,14 +36,21 @@ export class HederaFacilitatorClient {
     try {
       const url = `${MIRROR_NODE}/api/v1/contracts/results/${txHash}`;
       console.log(`[HederaFacilitator] Verifying tx: ${url}`);
+      interface MirrorResult {
+        result?: string;
+        to?: string;
+        amount?: number;
+        _status?: { messages?: unknown[] };
+      }
+
       const res = await fetch(url);
-      const data = await res.json();
+      const data = await res.json() as MirrorResult;
 
       if (data._status?.messages) {
         // Not found — wait a bit more and retry once
         await new Promise((r) => setTimeout(r, 3000));
         const res2 = await fetch(url);
-        const data2 = await res2.json();
+        const data2 = await res2.json() as MirrorResult;
         if (data2._status?.messages) {
           return { isValid: false, invalidReason: `transaction not found on Mirror Node: ${txHash}` };
         }
