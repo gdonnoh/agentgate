@@ -130,9 +130,15 @@ async function agentFetch(
 
   const paymentRequired = decodePaymentRequiredHeader(paymentRequiredHeader);
   const accepts = paymentRequired.accepts as any[];
-  const chosen = accepts[0]; // World Chain first
+  const chosen = accepts[0];
 
-  log.dim(`   Price:   ${Number(chosen.amount) / 1e6} USDC`);
+  // Display amount correctly: HBAR tinybars (÷1e8) or USDC (÷1e6)
+  const isHbar = chosen.asset === "hbar" || chosen.network === "eip155:296";
+  const displayAmount = isHbar
+    ? `${(Number(chosen.amount) / 1e8).toFixed(4)} HBAR (~$${(Number(chosen.amount) / 1e8 / 11.4).toFixed(4)})`
+    : `${Number(chosen.amount) / 1e6} USDC`;
+
+  log.dim(`   Price:   ${displayAmount}`);
   log.dim(`   Network: ${chosen.network}`);
   log.dim(`   Asset:   ${chosen.asset}`);
   log.dim(`   AgentKit challenge: nonce=${(paymentRequired.extensions as any)?.agentkit?.info?.nonce?.slice(0, 8)}...`);
