@@ -87,7 +87,6 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
   const [proxyEnabled,  setProxyEnabled]  = useState(false);
   const [backendUrl,    setBackendUrl]    = useState("");
   const [headerRows,    setHeaderRows]    = useState<{key: string; val: string}[]>([{ key: "", val: "" }]);
-  const [proxySaving,   setProxySaving]   = useState(false);
   const [proxyDone,     setProxyDone]     = useState<string | null>(null); // proxyUrl
   const [proxyError,    setProxyError]    = useState<string | null>(null);
 
@@ -257,52 +256,6 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
     }
   }
 
-  // ── Configure proxy backend ────────────────────────────────────────────────
-  async function handleProxyConfig(endpointId: number) {
-    if (!wallet.state.connected) { await wallet.connect(); return; }
-    setProxySaving(true);
-    setProxyError(null);
-    setProxyDone(null);
-
-    try {
-      const SERVER = import.meta.env.VITE_SERVER_URL || "http://localhost:4021";
-      const injectHeaders: Record<string, string> = {};
-      for (const row of headerRows) {
-        if (row.key.trim()) injectHeaders[row.key.trim()] = row.val.trim();
-      }
-
-      const timestamp = Date.now();
-      const message   = `AgentGate proxy config\nendpointId: ${endpointId}\nbackendUrl: ${backendUrl.trim()}\ntimestamp: ${timestamp}`;
-
-      // Sign with connected wallet via MetaMask/Rabby
-      const signature = await (window as any).ethereum.request({
-        method:  "personal_sign",
-        params:  [message, wallet.state.address],
-      });
-
-      const res = await fetch(`${SERVER}/api/publisher/proxy-config`, {
-        method:  "POST",
-        headers: { "content-type": "application/json" },
-        body:    JSON.stringify({
-          endpointId,
-          backendUrl: backendUrl.trim(),
-          injectHeaders,
-          walletAddress: wallet.state.address,
-          signature,
-          timestamp,
-        }),
-      });
-
-      const data = await res.json() as any;
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      setProxyDone(data.proxyUrl);
-    } catch (e: any) {
-      setProxyError(e.message || String(e));
-    } finally {
-      setProxySaving(false);
-    }
-  }
-
   async function handleRetryDeposit() {
     if (!wallet.state.connected) { await wallet.connect(); return; }
     if (wallet.state.chainId !== NETWORKS[selectedNet].chainId) {
@@ -334,7 +287,6 @@ export function PublishForm({ networkId }: { networkId: NetworkId }) {
   const wrongNetwork = wallet.state.connected && wallet.state.chainId !== NETWORKS[selectedNet].chainId;
   const canPublish   = testResult?.ok && !publishing && !publishResult;
   const hasDeposit   = parseFloat(gasDeposit) > 0;
-  const depositPending = publishResult && hasDeposit && !depositDone && !depositError;
 
   // Real estimate: deposit (wei) / cost-per-call (wei)
   // cost-per-call = gasPrice × ~65,000 gas (typical EVM contract call on Hedera)

@@ -34,7 +34,6 @@ function buildSteps(
   ev: GasSponsoredEvent | null
 ): Step[] {
   const dep    = DEPLOYMENTS[networkId];
-  const net    = NETWORKS[networkId];
   const isLive = ev !== null;
 
   const agentAddr  = isLive ? fmt(ev!.agent)   : "0x05a7Ae…69b0";

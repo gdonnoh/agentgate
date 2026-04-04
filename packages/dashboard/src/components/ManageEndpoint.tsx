@@ -108,9 +108,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
-
-export function ManageEndpoint({ networkId }: { networkId: NetworkId }) {
-  const net    = NETWORKS[networkId];
+export function ManageEndpoint(_props: { networkId: NetworkId }) {
   const wallet = useWallet();
 
   const [selectedNet] = useState<NetworkId>("hedera");
@@ -246,7 +244,7 @@ export function ManageEndpoint({ networkId }: { networkId: NetworkId }) {
     setDeactivateError(null);
 
     try {
-      const chain        = selectedNet === "hedera" ? hederaTestnet : baseSepolia;
+      const chain        = hederaTestnet;
       const publicClient = createPublicClient({ chain, transport: http(NETWORKS[selectedNet].rpc) });
       const hash         = endpointHash(trimmed);
       const d            = DEPLOYMENTS[selectedNet];

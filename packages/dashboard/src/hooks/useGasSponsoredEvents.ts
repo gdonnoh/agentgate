@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { createPublicClient, http, parseAbiItem, type Address } from "viem";
-import { baseSepolia } from "viem/chains";
-import { DEPLOYMENTS, NETWORKS } from "../lib/chains";
+import { parseAbiItem, type Address } from "viem";
+import { DEPLOYMENTS } from "../lib/chains";
 import type { NetworkId } from "../lib/chains";
 
 export interface GasSponsoredEvent {
@@ -19,11 +18,7 @@ const PAYMASTER_ABI_EVENT = parseAbiItem(
 );
 
 // Only Base Sepolia has a real Paymaster; Hedera paymaster is unverified
-const CLIENTS: Record<NetworkId, ReturnType<typeof createPublicClient> | null> = {
-  baseSepolia: createPublicClient({
-    chain: baseSepolia,
-    transport: http("https://sepolia.base.org"),
-  }),
+const CLIENTS: any = {
   hedera: null, // Hedera doesn't have ERC-4337 event polling support
 };
 
@@ -67,7 +62,7 @@ export function useGasSponsoredEvents(networkId: NetworkId, limit = 10) {
 
         if (logs.length > 0) {
           const newEvents: GasSponsoredEvent[] = await Promise.all(
-            logs.map(async (log) => {
+            logs.map(async (log: any) => {
               let timestamp = Date.now() / 1000;
               try {
                 const block = await client.getBlock({ blockNumber: log.blockNumber! });
