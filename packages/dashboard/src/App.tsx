@@ -5,8 +5,9 @@ import { NetworkCard } from "./components/NetworkCard";
 import { FlowDiagram } from "./components/FlowDiagram";
 import { EndpointTable } from "./components/EndpointTable";
 import { PublishForm } from "./components/PublishForm";
+import { ManageEndpoint } from "./components/ManageEndpoint";
 
-type View = "dashboard" | "flow" | "publish";
+type View = "dashboard" | "flow" | "publish" | "manage";
 
 const NETWORK_IDS: NetworkId[] = ["baseSepolia", "hedera"];
 
@@ -54,7 +55,7 @@ export default function App() {
 
         {/* View switcher */}
         <div className="view-tabs">
-          {(["dashboard", "flow", "publish"] as View[]).map((v) => (
+          {(["dashboard", "flow", "publish", "manage"] as View[]).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
@@ -63,7 +64,8 @@ export default function App() {
             >
               {v === "dashboard" ? "📊 dashboard" :
                v === "flow"      ? "⚡ flow" :
-                                   "➕ publish"}
+               v === "publish"   ? "➕ publish" :
+                                   "⚙ manage"}
             </button>
           ))}
         </div>
@@ -103,6 +105,18 @@ export default function App() {
             </span>
           </div>
           <PublishForm networkId={activeNet} />
+        </section>
+      )}
+
+      {view === "manage" && (
+        <section className="panel panel-narrow">
+          <div className="section-header">
+            <span className="section-title">Manage Endpoint</span>
+            <span className="section-sub">
+              Top up your gas budget or adjust sponsorship % for an existing endpoint
+            </span>
+          </div>
+          <ManageEndpoint networkId={activeNet} />
         </section>
       )}
 
